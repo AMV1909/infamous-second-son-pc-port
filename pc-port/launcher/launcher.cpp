@@ -65,8 +65,8 @@ struct Setting {
     int index = 0;
 };
 
-enum Tab { TabDisplay, TabGraphics, TabAdvanced, TabCount };
-const wchar_t* kTabNames[TabCount] = {L"DISPLAY", L"GRAPHICS", L"ADVANCED"};
+enum Tab { TabDisplay, TabGraphics, TabGame, TabAdvanced, TabCount };
+const wchar_t* kTabNames[TabCount] = {L"DISPLAY", L"GRAPHICS", L"GAME", L"ADVANCED"};
 
 std::vector<Setting> g_settings = {
     {"window_mode", L"Window mode", L"Alt+Enter also switches in game.",
@@ -84,6 +84,13 @@ std::vector<Setting> g_settings = {
      {{L"Wait", "0"}, {L"Skip", "1"}}, TabGraphics},
     {"blackbox", L"GPU crash diagnostics", L"Writes a report if the GPU hangs.",
      {{L"On", "1"}, {L"Off", "0"}}, TabAdvanced},
+    // The languages of the CUSA00004 package (the PS4 system language ids, src/services.c
+    // ISS_LANGUAGE): ten with voices, the four Nordic ones subtitles only (English voices).
+    {"language", L"Language", L"Text and voices. Nordic languages: subtitles only.",
+     {{L"English", "1"}, {L"French", "2"}, {L"Italian", "5"}, {L"German", "4"}, {L"Spanish", "3"},
+      {L"Dutch", "6"}, {L"Portuguese", "7"}, {L"Russian", "8"}, {L"Polish", "16"}, {L"Turkish", "19"},
+      {L"Danish", "14"}, {L"Finnish", "12"}, {L"Norwegian", "15"}, {L"Swedish", "13"}},
+     TabGame},
 };
 std::wstring g_game_dir;
 std::map<std::string, std::string> g_extra; // other keys of launcher.ini (dev overrides)
@@ -656,6 +663,7 @@ std::wstring LaunchGame(HWND notify) {
     env[L"BB_FSR1"] = Widen(SettingValue("fsr"));
     env[L"ISS_ASYNC_SKIP_DRAWS"] = Widen(SettingValue("shader_mode"));
     env[L"ISS_GPU_BLACKBOX"] = Widen(SettingValue("blackbox"));
+    env[L"ISS_LANGUAGE"] = Widen(SettingValue("language"));
     if (const std::string map = PadMapString(); !map.empty()) env[L"ISS_PAD_MAP"] = Widen(map);
     {
         std::string labels;

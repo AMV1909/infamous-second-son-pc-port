@@ -63,9 +63,15 @@ static int32_t GUEST_ABI user_terminate(void){local_user_initialized=login_pendi
 static int32_t GUEST_ABI user_initial(int32_t *id){if(!id)return (int32_t)UINT32_C(0x80960005);if(!local_user_initialized)return (int32_t)UINT32_C(0x80960002);*id=1;return 0;}
 static int32_t GUEST_ABI user_list(int32_t *ids){if(!ids)return (int32_t)UINT32_C(0x80960005);ids[0]=1;ids[1]=ids[2]=ids[3]=-1;return 0;}
 static int32_t GUEST_ABI user_event(int32_t *e){if(!e)return (int32_t)UINT32_C(0x80960005);if(!InterlockedExchange((volatile LONG *)&login_pending,0))return (int32_t)UINT32_C(0x80960007);e[0]=0;e[1]=1;return 0;}
+// The system language (SCE_SYSTEM_SERVICE_PARAM_ID_LANG): ISS_LANGUAGE=<PS4 language id, 0-30>,
+// set by the launcher from the languages of the CUSA00004 package; 17 when unset.
+static int32_t system_language(void){
+    const char *s=getenv("ISS_LANGUAGE");char *end;long id=s?strtol(s,&end,10):-1;
+    return s&&*s&&!*end&&id>=0&&id<=30?(int32_t)id:17;
+}
 static int32_t GUEST_ABI system_param(int id,int32_t *out){
     if(!out)return (int32_t)UINT32_C(0x80a10003);
-    switch(id){case 1:*out=17;break;case 2:*out=1;break;case 3:*out=1;break;
+    switch(id){case 1:*out=system_language();break;case 2:*out=1;break;case 3:*out=1;break;
     case 4:{TIME_ZONE_INFORMATION tz;DWORD result=GetTimeZoneInformation(&tz);*out=-tz.Bias-(result==TIME_ZONE_ID_DAYLIGHT?tz.DaylightBias:tz.StandardBias);break;}
     case 5:{TIME_ZONE_INFORMATION tz;*out=GetTimeZoneInformation(&tz)==TIME_ZONE_ID_DAYLIGHT;break;}
     case 7:*out=0;break;case 1000:*out=1;break;default:return (int32_t)UINT32_C(0x80a10003);}return 0;

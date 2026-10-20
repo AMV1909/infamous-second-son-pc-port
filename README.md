@@ -107,6 +107,7 @@ The whole controller is on the keyboard too, while the game window has the focus
   - window mode and VSync;
   - frame rate limit: Unlimited, or 30 to 240;
   - FSR 1 upscaling.
+- **Game:** the language, from the 14 the CUSA00004 package ships: English, French, Italian, German, Spanish, Dutch, Portuguese, Russian, Polish and Turkish (text and voices), Danish, Finnish, Norwegian and Swedish (subtitles, English voices).
 - **CONTROLS:** the controller layout described above.
 - **Shader cache:** it builds up from session to session. A session that crashes is rolled back, so a bad cache never sticks.
 ## Repository layout
