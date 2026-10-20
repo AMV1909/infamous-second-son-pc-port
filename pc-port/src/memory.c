@@ -5,7 +5,23 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define CAPACITY UINT64_C(0x120000000)
+// The direct memory the game sees: 4.5 GiB, or ISS_DIRECT_MEMORY_MB. The game takes what is left
+// after its fixed pools for its main heap, where its render targets live too: above 1080p
+// (ISS_RESOLUTION, native/ultrawide.cpp) 5.5 GiB by default, so the heap is 4.08 GB instead of
+// 3.08 (at 5120x1440 the 3.08 GB heap ran out at startup: a render target cleared at address 0).
+static uint64_t capacity(void){
+    static uint64_t value;
+    if(!value){
+        const char *mb=getenv("ISS_DIRECT_MEMORY_MB"),*resolution=getenv("ISS_RESOLUTION");
+        unsigned w=0,h=0;
+        uint64_t requested=mb?strtoull(mb,NULL,10)*1048576u:0;
+        if(!mb&&resolution&&sscanf(resolution,"%ux%u",&w,&h)==2&&(uint64_t)w*h>1920u*1080u)
+            requested=UINT64_C(5632)*1048576u;
+        value=requested>=UINT64_C(0x120000000)&&requested<=UINT64_C(0x400000000)?requested&~UINT64_C(0xffffff):UINT64_C(0x120000000);
+    }
+    return value;
+}
+#define CAPACITY capacity()
 #define ERR_INVALID ((int32_t)UINT32_C(0x80020016))
 #define ERR_AGAIN ((int32_t)UINT32_C(0x80020023))
 #define ERR_NOMEM ((int32_t)UINT32_C(0x8002000c))

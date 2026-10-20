@@ -78,8 +78,22 @@ std::vector<Setting> g_settings = {
       {L"75", "75"}, {L"90", "90"}, {L"100", "100"}, {L"120", "120"}, {L"144", "144"},
       {L"165", "165"}, {L"240", "240"}},
      TabDisplay},
-    {"fsr", L"Upscaling (FSR 1)", L"Upscales the 1080p image on larger windows.",
+    {"fsr", L"Upscaling (FSR 1)", L"Upscales the picture on windows larger than it.",
      {{L"Off", "0"}, {L"On", "1"}}, TabDisplay},
+    // The picture size, field of view and HUD edges (native/ultrawide.cpp: ISS_RESOLUTION,
+    // ISS_FOV, ISS_HUD_ASPECT). Wider than 16:9 keeps the vertical view and widens it.
+    {"resolution", L"Resolution", L"Wider than 16:9 shows more to the sides. Desktop: your monitor's.",
+     {{L"1920x1080 (16:9)", "1920x1080"}, {L"2560x1440 (16:9)", "2560x1440"},
+      {L"3840x2160 (16:9)", "3840x2160"}, {L"2560x1080 (21:9)", "2560x1080"},
+      {L"3440x1440 (21:9)", "3440x1440"}, {L"3840x1600 (24:10)", "3840x1600"},
+      {L"3840x1080 (32:9)", "3840x1080"}, {L"5120x1440 (32:9)", "5120x1440"}, {L"Desktop", "desktop"}},
+     TabGraphics},
+    {"fov", L"Field of view", L"100%: the game's own. Higher shows more around the camera.",
+     {{L"100%", "100"}, {L"105%", "105"}, {L"110%", "110"}, {L"115%", "115"}, {L"120%", "120"},
+      {L"130%", "130"}, {L"90%", "90"}},
+     TabGraphics},
+    {"hud_width", L"HUD width", L"Where the HUD edges sit on screens wider than it.",
+     {{L"16:9", "1.7778"}, {L"21:9", "2.3704"}, {L"Full width", "0"}}, TabGraphics},
     {"shader_mode", L"Shader compilation", L"Wait: no missing objects. Skip: smoother, brief pop-in.",
      {{L"Wait", "0"}, {L"Skip", "1"}}, TabGraphics},
     {"blackbox", L"GPU crash diagnostics", L"Writes a report if the GPU hangs.",
@@ -202,6 +216,17 @@ const char* SettingValue(const char* key) {
     for (const auto& s : g_settings)
         if (!strcmp(s.key, key)) return s.choices[s.index].value;
     return "";
+}
+
+// ISS_RESOLUTION: the chosen WxH, or the primary monitor's current mode for "desktop".
+std::string ResolutionValue() {
+    const std::string value = SettingValue("resolution");
+    if (value != "desktop") return value;
+    DEVMODEW mode{};
+    mode.dmSize = sizeof(mode);
+    if (!EnumDisplaySettingsW(nullptr, ENUM_CURRENT_SETTINGS, &mode) || !mode.dmPelsWidth || !mode.dmPelsHeight)
+        return "1920x1080";
+    return std::to_string(mode.dmPelsWidth) + "x" + std::to_string(mode.dmPelsHeight);
 }
 
 // An override from launcher.ini (dev and testing), else the default under the root.
@@ -661,6 +686,9 @@ std::wstring LaunchGame(HWND notify) {
     if (const int limit = atoi(SettingValue("fps_limit")); limit > 0)
         env[L"BB_VBLANK_HZ"] = std::to_wstring(limit * ((240 + limit - 1) / limit));
     env[L"BB_FSR1"] = Widen(SettingValue("fsr"));
+    env[L"ISS_RESOLUTION"] = Widen(ResolutionValue());
+    env[L"ISS_FOV"] = Widen(SettingValue("fov"));
+    env[L"ISS_HUD_ASPECT"] = Widen(SettingValue("hud_width"));
     env[L"ISS_ASYNC_SKIP_DRAWS"] = Widen(SettingValue("shader_mode"));
     env[L"ISS_GPU_BLACKBOX"] = Widen(SettingValue("blackbox"));
     env[L"ISS_LANGUAGE"] = Widen(SettingValue("language"));

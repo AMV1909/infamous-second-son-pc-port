@@ -145,6 +145,7 @@ static int key(int code){return (GetAsyncKeyState(code)&0x8000)!=0;}
 // middle button recenters it, Shift aims finely. The window title names the mode. The keys can be
 // changed with ISS_TOUCH_KEYS (above).
 static int mouse_mode,mode_keys[3],mouse_anchored,mouse_touch,spray_wait_release;
+static int cmd_spray_toggle,cmd_spray_center;static double cmd_shake_until,cmd_aim_until,cmd_paint_until;static float cmd_aim_dx,cmd_aim_dy; // ISS_PAD_CMD_FILE spray (paint: R2 held)
 static HWND game_window;
 static POINT mouse_anchor;
 static float spray[4];
@@ -289,13 +290,19 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
     if(panel.swipe>=0){swipe_direction=panel.swipe;swipe_started=out->timestamp;was_touch[0]=0;}
     if(panel.mode>=0&&game_window)set_mouse_mode(panel.mode==mouse_mode?0:panel.mode,game_window);
     if(panel.recentre)memcpy(spray,spray_pose,sizeof(spray));
+    // Scripted spray (ISS_PAD_CMD_FILE: spray, center, shake:s, paint:s, aimleft/aimright/aimup/aimdown:s): the can
+    // mode toggled, shaken and turned as the mouse would.
+    if(cmd_spray_toggle){cmd_spray_toggle=0;set_mouse_mode(mouse_mode==2?0:2,game_window);spray_wait_release=0;}
+    if(cmd_spray_center){cmd_spray_center=0;memcpy(spray,spray_pose,sizeof(spray));}
+    const double cmd_now=(double)out->timestamp/1e6;
+    if(mouse_mode==2&&cmd_now<cmd_aim_until){mouse_dx+=cmd_aim_dx;mouse_dy+=cmd_aim_dy;}
     if(mouse_mode==2){
         const float dt=spray_tick?(float)(out->timestamp-spray_tick)/1e6f:0;spray_tick=out->timestamp;
         // Shift: fine aim (a third of the speed); the window's sensitivity scales both.
         const float scale=panel.sensitivity*(focused&&key(VK_SHIFT)?.35f:1.f);
-        if(!focused)mouse_dx=mouse_dy=0;
+        if(!focused&&cmd_now>=cmd_aim_until)mouse_dx=mouse_dy=0;
         if(spray_wait_release){if(!mouse_left&&!mouse_right)spray_wait_release=0;mouse_left=mouse_right=0;}
-        pad_spray_step(spray,mouse_dx*scale,mouse_dy*scale,dt>0.1f?0.1f:dt,focused&&mouse_right,(double)out->timestamp/1e6,out->angular,out->acceleration);
+        pad_spray_step(spray,mouse_dx*scale,mouse_dy*scale,dt>0.1f?0.1f:dt,(focused&&mouse_right)||cmd_now<cmd_shake_until,(double)out->timestamp/1e6,out->angular,out->acceleration);
         memcpy(out->orientation,spray,sizeof(spray));
         if(focused&&mouse_left){out->r2=255;}
     }
@@ -335,21 +342,48 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
     // buttons options cross circle square triangle up down left right l1 r1 l2 r2 l3 r3 touch, or
     // the left stick lup ldown lleft lright (0.2 s by default). Each press is logged once.
     static int seq_loaded;static struct{double t,dur;uint32_t mask;int stick,logged;char name[12];}seq[96];static int seq_count;
-    if(!seq_loaded){seq_loaded=1;const char *s=getenv("ISS_PAD_SEQ");
-        static const struct{const char *n;uint32_t m;int stick;}names[]={{"options",8,0},{"cross",0x4000,0},{"circle",0x2000,0},
+    static const struct{const char *n;uint32_t m;int stick;}names[]={{"options",8,0},{"cross",0x4000,0},{"circle",0x2000,0},
             {"square",0x8000,0},{"triangle",0x1000,0},{"up",0x10,0},{"down",0x40,0},{"left",0x80,0},{"right",0x20,0},
             {"l1",0x400,0},{"r1",0x800,0},{"l2",0x100,0},{"r2",0x200,0},{"l3",2,0},{"r3",4,0},{"touch",0x100000,0},
             {"lup",0,1},{"ldown",0,2},{"lleft",0,3},{"lright",0,4}};
+    if(!seq_loaded){seq_loaded=1;const char *s=getenv("ISS_PAD_SEQ");
         while(s&&*s&&seq_count<96){char item[48];size_t n=strcspn(s,",");if(n>=sizeof(item))n=sizeof(item)-1;memcpy(item,s,n);item[n]=0;s+=n;if(*s==',')++s;
             char *a=strchr(item,':');if(!a)continue;*a++=0;char *b=strchr(a,':');if(b)*b++=0;
             for(unsigned i=0;i<sizeof(names)/sizeof(names[0]);++i)if(!strcmp(a,names[i].n)){
                 seq[seq_count].t=atof(item);seq[seq_count].dur=b?atof(b):0.2;seq[seq_count].mask=names[i].m;seq[seq_count].stick=names[i].stick;
                 strncpy(seq[seq_count].name,a,sizeof(seq[0].name)-1);++seq_count;break;}}
         if(seq_count)fprintf(stderr,"PAD_SEQ %d presses\n",seq_count);}
+    // ISS_PAD_CMD_FILE (scripted menu walks): the same "button[:seconds]" items, read from this file
+    // when it appears (checked every 100 ms) and pressed one after the other from then on, 0.25 s
+    // apart; the file is deleted once read. "wait:s" only waits.
+    {static const char *cmd_path;static int cmd_init;static uint64_t cmd_checked;static double cmd_next;
+        if(!cmd_init){cmd_init=1;cmd_path=getenv("ISS_PAD_CMD_FILE");}
+        const double now=(double)out->timestamp/1e6;
+        if(cmd_path&&out->timestamp-cmd_checked>=100000){cmd_checked=out->timestamp;
+            FILE *f=fopen(cmd_path,"rb");char text[512]={0};
+            if(f){size_t n=fread(text,1,sizeof(text)-1,f);text[n]=0;fclose(f);DeleteFileA(cmd_path);
+                if(cmd_next<now)cmd_next=now;
+                const char *s=text;
+                while(*s){char item[48];size_t k=strcspn(s,",\r\n");if(k>=sizeof(item))k=sizeof(item)-1;memcpy(item,s,k);item[k]=0;s+=k;while(*s==','||*s=='\r'||*s=='\n')++s;
+                    char *b=strchr(item,':');if(b)*b++=0;const double dur=b?atof(b):0.2;
+                    if(!strcmp(item,"wait")){cmd_next+=dur;continue;}
+                    if(!strcmp(item,"spray")){cmd_spray_toggle=1;continue;}
+                    if(!strcmp(item,"center")){cmd_spray_center=1;continue;}
+                    if(!strcmp(item,"paint")){cmd_paint_until=cmd_next+dur;continue;} // R2 held while the next items run
+                    if(!strcmp(item,"shake")){cmd_shake_until=cmd_next+dur;cmd_next+=dur+0.25;continue;}
+                    if(!strncmp(item,"aim",3)){const float step=4.f;cmd_aim_dx=!strcmp(item,"aimleft")?-step:!strcmp(item,"aimright")?step:0;
+                        cmd_aim_dy=!strcmp(item,"aimup")?-step:!strcmp(item,"aimdown")?step:0;cmd_aim_until=cmd_next+dur;cmd_next+=dur+0.25;continue;}
+                    for(unsigned i=0;i<sizeof(names)/sizeof(names[0]);++i)if(!strcmp(item,names[i].n)){
+                        if(seq_count==96){int kept=0;for(int j=0;j<seq_count;++j)if(seq[j].t+seq[j].dur>=now)seq[kept++]=seq[j];seq_count=kept;}
+                        if(seq_count<96){seq[seq_count].t=cmd_next;seq[seq_count].dur=dur;seq[seq_count].mask=names[i].m;seq[seq_count].stick=names[i].stick;
+                            seq[seq_count].logged=0;memset(seq[seq_count].name,0,sizeof(seq[0].name));strncpy(seq[seq_count].name,item,sizeof(seq[0].name)-1);++seq_count;cmd_next+=dur+0.25;}
+                        break;}}
+                fprintf(stderr,"PAD_CMD %s",text);if(text[0]&&text[strlen(text)-1]!='\n')fputc('\n',stderr);}}}
     for(int i=0;i<seq_count;++i){double t=(double)out->timestamp/1e6;if(t<seq[i].t||t>=seq[i].t+seq[i].dur)continue;
         out->buttons|=seq[i].mask;if(seq[i].mask==0x100)out->l2=255;if(seq[i].mask==0x200)out->r2=255;if(seq[i].stick==1)out->ly=0;if(seq[i].stick==2)out->ly=255;if(seq[i].stick==3)out->lx=0;if(seq[i].stick==4)out->lx=255;
         if(seq[i].mask==0x100000&&!contacts[0]&&!contacts[1]){contacts[0]=1;xy[0][0]=960;xy[0][1]=471;}
         if(!seq[i].logged){seq[i].logged=1;fprintf(stderr,"PAD_SEQ %s at %.2f s\n",seq[i].name,t);}}
+    if((double)out->timestamp/1e6<cmd_paint_until)out->r2=255;
     if(out->l2>30)out->buttons|=0x100;if(out->r2>30)out->buttons|=0x200;
     if((contacts[0]||contacts[1])&&!was_touch[0]&&!was_touch[1])touch_start=out->timestamp;
     for(unsigned i=0;i<2;++i){if(contacts[i]){

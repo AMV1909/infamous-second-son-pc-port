@@ -107,9 +107,28 @@ The whole controller is on the keyboard too, while the game window has the focus
   - window mode and VSync;
   - frame rate limit: Unlimited, or 30 to 240;
   - FSR 1 upscaling.
+- **Graphics:**
+  - resolution: 16:9 up to 4K, 21:9 (2560x1080, 3440x1440), 24:10 (3840x1600), 32:9 (3840x1080, 5120x1440), or Desktop (your monitor's);
+  - field of view: 90% to 130% of the game's;
+  - HUD width: on screens wider than 16:9 the HUD edges stay in a centred 16:9 or 21:9 area, or go to the full width.
+
+  Wider than 16:9 keeps the game's vertical view and shows more to the sides (Hor+); the menus and HUD keep their size. See [Ultrawide](#ultrawide).
 - **Game:** the language, from the 14 the CUSA00004 package ships: English, French, Italian, German, Spanish, Dutch, Portuguese, Russian, Polish and Turkish (text and voices), Danish, Finnish, Norwegian and Swedish (subtitles, English voices).
 - **CONTROLS:** the controller layout described above.
 - **Shader cache:** it builds up from session to session. A session that crashes is rolled back, so a bad cache never sticks.
+## Ultrawide
+
+`pc-port/native/ultrawide.cpp` patches the game before it starts (each patched function is checked against the 1.07 eboot first):
+- `ISS_RESOLUTION=WxH`: the renderer's output and render size, which the game otherwise sets to 1920x1080. Every render target is derived from it.
+- The cameras take their aspect from the UI screen size: it becomes (1080 x W/H) x 1080, so the vertical field of view stays and the view widens. The UI is laid out from the centre in units of the screen height, so it keeps its size.
+- `ISS_HUD_ASPECT=a` (0: full width): the left and right HUD anchors follow the safe area margins, which are moved in to a centred a:1 area. Subtitles wrap inside it too.
+- `ISS_FOV=p`: the cameras' tan(fov/2) times p/100.
+- Render size limit: the forward shaders walk per-tile light lists (16x16 pixel tiles) until a terminator, and the lists live in a buffer of fixed size. With too many tiles the last lists are never written and the GPU hangs (on NVIDIA and AMD alike): the title screen at 5120x1440, a cutscene at 4984x1400. The picture is rendered with at most as many tiles as the game uses on PS4 Pro (3200x1800, 22600 tiles; `ISS_RENDER_MAX_TILES`), in the same aspect, and the window scales it up: 5120x1440 renders at 4520x1264, 3440x1440 and smaller at their own size.
+- Above 1080p the game gets 5.5 GiB of direct memory instead of 4.5 (`ISS_DIRECT_MEMORY_MB`): its main heap, where the render targets live too, ran out at 5120x1440.
+- Cutscenes are rendered by the engine at the full width, without black bars. Full-screen UI backdrops made for 16:9 (the title screen's black background, the opening text) cover only the centre.
+
+The launcher sets all three from **SETTINGS > GRAPHICS**. The window keeps the picture's aspect; in fullscreen on a monitor of the same aspect the picture fills it.
+
 ## Repository layout
 
 | Path | What it holds |
@@ -133,8 +152,8 @@ Local-only folders (git-ignored):
 
 Requirements:
 - Windows 11.
-- Visual Studio 2022 Build Tools (Windows SDK).
-- LLVM `clang-cl` in `tools/llvm/`.
+- Visual Studio 2022 or 2026 with "Desktop development with C++" (MSVC, Windows SDK); found with vswhere, or `ISS_VCVARS`.
+- LLVM `clang-cl` in `tools/llvm/`, or Visual Studio's "C++ Clang Compiler for Windows" component, or `ISS_CLANG`.
 - Python 3.12.
 - shadPS4 sources in `research/shadPS4-perf`: [weshayoub92/shadPS4-perf](https://github.com/weshayoub92/shadPS4-perf) at commit `584374867d6a`, with `pc-port/third_party/shadPS4-perf-local.patch` applied (`git apply`). Configure it with CMake into `build-opt/` (renderer flags and zydis) and `build-sdl/` (SDL3).
 

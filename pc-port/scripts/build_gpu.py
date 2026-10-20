@@ -15,7 +15,8 @@ ROOT=Path(__file__).resolve().parents[1]
 WORKSPACE=ROOT.parent
 SOURCE=WORKSPACE/'research/shadPS4-perf/src'
 OUT=ROOT/'out/gpu-build'
-CLANG=WORKSPACE/'tools/llvm/bin/clang-cl.exe'
+import toolchain
+CLANG=toolchain.clang()
 LTO_MODES=('none','thin','full')
 CPU_TARGETS=('generic','znver3')
 
@@ -48,15 +49,7 @@ def link_command(objects,libraries,dll_output,link_flags):
     return command
 
 def environment():
-    vars=Path(r'C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat')
-    result=subprocess.run(f'cmd.exe /d /s /c ""{vars}" >nul && set"',capture_output=True,text=True,check=True)
-    env=os.environ.copy()
-    for line in result.stdout.splitlines():
-        if '=' in line:
-            key,value=line.split('=',1);env[key]=value
-    env['PATH']=str(CLANG.parent)+os.pathsep+env.get('Path',env.get('PATH',''))
-    env.pop('Path',None)
-    return env
+    return toolchain.environment(CLANG)
 
 def build(check=False,jobs=4,output=None,lto='none',cpu='generic',dry_run=False):
     out,optimization_flags,link_flags=optimization_options(lto,cpu,jobs)

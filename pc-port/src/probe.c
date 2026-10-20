@@ -113,6 +113,18 @@ static LONG CALLBACK fault(EXCEPTION_POINTERS *exception) {
     printf("\"tls_reads_emulated\":%llu,", (unsigned long long)runtime_tls_fault_count());
     if (id < import_count)
         printf("\"import_index\":%llu,\"symbol\":\"%s\",", (unsigned long long)id, names[id]);
+    // Up to 8 guest code addresses from the top 64 stack slots: candidate return addresses, for
+    // faults in leaf routines that saved a register first (libc memset: [rsp] is the saved rbp).
+    {
+        uint64_t slots[64] = {0};
+        ReadProcessMemory(GetCurrentProcess(), (void *)exception->ContextRecord->Rsp, slots, sizeof(slots), &copied);
+        int shown = 0;
+        printf("\"stack\":[");
+        for (size_t s = 0; s < copied / 8 && shown < 8; ++s)
+            if (slots[s] >= (uintptr_t)image && slots[s] - (uintptr_t)image < image_size)
+                printf("%s\"0x%llx\"", shown++ ? "," : "", (unsigned long long)(slots[s] - (uintptr_t)image));
+        printf("],");
+    }
     printf("\"rax\":\"0x%llx\",\"tid\":%lu,",(unsigned long long)exception->ContextRecord->Rax,GetCurrentThreadId());
     printf("\"rdi\":\"0x%llx\",\"rsi\":\"0x%llx\"}\n",
            (unsigned long long)exception->ContextRecord->Rdi, (unsigned long long)exception->ContextRecord->Rsi);

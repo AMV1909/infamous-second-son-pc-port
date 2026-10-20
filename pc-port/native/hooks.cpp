@@ -3,6 +3,7 @@
 #include "reduction.h"
 #include "feedback_identity.h"
 #include "geometry.h"
+#include "ultrawide.h"
 #include "../src/runtime.h"
 #include <atomic>
 #include <cstdio>
@@ -111,7 +112,9 @@ extern "C" int native_install_hooks(unsigned char *image,std::uint64_t size){
     if(markers<0)return markers;
     const int jobs=iss::native::InstallRenderJobCensus(image,size);
     if(jobs<0)return jobs;
-    const int installed=reduction+geometry+spin+markers+jobs;
+    const int ultrawide=iss::native::InstallUltrawide(image,size);
+    if(ultrawide<0)return ultrawide;
+    const int installed=reduction+geometry+spin+markers+jobs+ultrawide;
     const char *feedback=std::getenv("ISS_FEEDBACK_IDENTITY");
     if(!feedback||feedback[0]!='1')return installed;
     if(!gpu_feedback_identity_available()){
