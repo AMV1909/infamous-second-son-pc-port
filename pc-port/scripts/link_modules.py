@@ -156,6 +156,18 @@ def link(game, out):
     if modules[0]['sha256'] != EXPECTED_EBOOT:
         raise ValueError('unsupported eboot identity')
     raw, report, rows = build_linked(modules)
+    # Apply the guarded compatibility rewrites before hashing/writing the linked image.
+    # The exact eboot identity check above and layout checks in the patcher prevent
+    # applying fixed-offset changes to an unrecognized game executable.
+    try:
+        from iss_intel_fix import patch_linked_image
+        raw, compatibility_patches = patch_linked_image(raw)
+    except ModuleNotFoundError as error:
+        if error.name != 'iced_x86':
+            raise
+        raise ValueError('linking requires the iced-x86 Python package; run '
+                         'py -3.12 -m pip install iced-x86') from error
+    report['compatibility_patches'] = compatibility_patches
     out.mkdir(parents=True, exist_ok=True)
     (out / 'boot-linked.bin').write_bytes(raw)
     report.update(sha256=hashlib.sha256(raw).hexdigest(),

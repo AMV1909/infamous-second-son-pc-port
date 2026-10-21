@@ -158,6 +158,7 @@ Requirements:
 - Visual Studio 2022 or 2026 with "Desktop development with C++" (MSVC, Windows SDK); found with vswhere, or `ISS_VCVARS`.
 - LLVM `clang-cl` in `tools/llvm/`, or Visual Studio's "C++ Clang Compiler for Windows" component, or `ISS_CLANG`.
 - Python 3.12.
+- Python package `iced-x86` for the guarded linked-image compatibility patch: `py -3.12 -m pip install iced-x86`.
 - shadPS4 sources in `research/shadPS4-perf`: [weshayoub92/shadPS4-perf](https://github.com/weshayoub92/shadPS4-perf) at commit `584374867d6a`, with `pc-port/third_party/shadPS4-perf-local.patch` applied (`git apply`). Configure it with CMake into `build-opt/` (renderer flags and zydis) and `build-sdl/` (SDL3).
 
 ```bat
