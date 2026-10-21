@@ -43,6 +43,8 @@ What is still translated today is the rest of the GPU command processor; moving 
 ## Controls
 
 - **Controllers:** Xbox pads, PlayStation pads and Steam Input / Steam Deck. The keyboard works too.
+- **Motion controls:** controllers with a gyro and an accelerometer (PlayStation pads, the Steam Controller, Steam Deck) are the spray can of the graffiti missions, as on a PS4: hold them sideways, shake, and aim by moving them. The Steam Controller and Steam Deck measure only up to 2 G, so their shake is scaled to what a DualShock 4 reports (`ISS_PAD_ACCEL_GAIN` changes it).
+- **The mouse cursor** is hidden over the game window while a controller is in use, except in mouse-as-touchpad mode (F6).
 - **Other keys:** F9 shows the frame rate, Alt+Enter toggles fullscreen.
 - **The ? at the top right of the launcher** lists the in-game keys below.
 
