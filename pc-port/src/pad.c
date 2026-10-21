@@ -117,22 +117,6 @@ void pad_accel_gain(float accel[3],float gravity[3],float gain,float dt){
     const float k=dt>0&&dt<.3f?dt/.3f:1;
     for(int i=0;i<3;++i){gravity[i]+=(accel[i]-gravity[i])*k;const float v=gravity[i]+gain*(accel[i]-gravity[i]);accel[i]=v>4?4:v<-4?-4:v;}
 }
-// ISS_PAD_SENSOR_LOG=1: once a second, the accelerometer's range per axis as measured (G), the
-// largest acceleration given to the game and the gyro's largest rate (rad/s).
-static void sensor_log(const float measured[3],const float given[3],const float gyro[3],uint64_t now){
-    static int enabled=-1;static uint64_t since;static float low[3],high[3],given_peak,gyro_peak;static unsigned reads;
-    if(enabled<0){const char *s=getenv("ISS_PAD_SENSOR_LOG");enabled=s&&s[0]=='1';}
-    if(!enabled)return;
-    if(!reads){since=now;for(int i=0;i<3;++i)low[i]=high[i]=measured[i];given_peak=gyro_peak=0;}
-    ++reads;
-    for(int i=0;i<3;++i){if(measured[i]<low[i])low[i]=measured[i];if(measured[i]>high[i])high[i]=measured[i];}
-    const float a=sqrtf(given[0]*given[0]+given[1]*given[1]+given[2]*given[2]),w=sqrtf(gyro[0]*gyro[0]+gyro[1]*gyro[1]+gyro[2]*gyro[2]);
-    if(a>given_peak)given_peak=a;if(w>gyro_peak)gyro_peak=w;
-    if(now-since<1000000000)return;
-    fprintf(stderr,"PAD_SENSOR reads=%u accel x=%.2f..%.2f y=%.2f..%.2f z=%.2f..%.2f peak_given=%.2f gyro_peak=%.2f\n",
-        reads,low[0],high[0],low[1],high[1],low[2],high[2],given_peak,gyro_peak);
-    reads=0;
-}
 static int read_sdl(PadData *out,int contacts[2],uint16_t xy[2][2]){
     if(!sdl_ready)return 0;SDL_UpdateGamepads();scan_gamepads();if(!sdl_pad)return 0;
     static const SDL_GamepadButton buttons[SRC_COUNT]={SDL_GAMEPAD_BUTTON_SOUTH,SDL_GAMEPAD_BUTTON_EAST,SDL_GAMEPAD_BUTTON_WEST,
@@ -158,9 +142,7 @@ static int read_sdl(PadData *out,int contacts[2],uint16_t xy[2][2]){
     SDL_GetGamepadSensorData(sdl_pad,SDL_SENSOR_GYRO,gyro,3);SDL_GetGamepadSensorData(sdl_pad,SDL_SENSOR_ACCEL,accel,3);
     for(int i=0;i<3;++i){out->angular[i]=isfinite(gyro[i])?gyro[i]:0;out->acceleration[i]=isfinite(accel[i])?accel[i]/SDL_STANDARD_GRAVITY:0;}
     uint64_t now=SDL_GetTicksNS();float dt=sensor_tick?(float)((double)(now-sensor_tick)/1e9):0;sensor_tick=now;
-    const float measured[3]={out->acceleration[0],out->acceleration[1],out->acceleration[2]};
     if(accel_gain!=1)pad_accel_gain(out->acceleration,gravity,accel_gain,dt<0.1f?dt:0);
-    sensor_log(measured,out->acceleration,out->angular,now);
     // Same q * angular-velocity convention as shadPS4 input/controller.cpp (GPL-2.0-or-later).
     if(dt>0&&dt<0.1f){float x=quaternion[0],y=quaternion[1],z=quaternion[2],w=quaternion[3];
         float gx=out->angular[0]*dt*.5f,gy=out->angular[1]*dt*.5f,gz=out->angular[2]*dt*.5f;
@@ -210,6 +192,7 @@ void pad_spray_step(float q[4],float dx,float dy,float dt,int shake,double secon
 // cursor is hidden over the window in spray mode, and while a controller is played unless the
 // mouse is the touchpad (F6).
 static WNDPROC game_proc;
+static HWND game_sdl_window;
 static int cursor_hidden(void){return mouse_mode==2||(mouse_mode==0&&pad_in_use);}
 static LRESULT CALLBACK game_window_proc(HWND window,UINT message,WPARAM wp,LPARAM lp){
     if(message==WM_SETCURSOR&&cursor_hidden()&&LOWORD(lp)==HTCLIENT){SetCursor(NULL);return TRUE;}
@@ -218,7 +201,22 @@ static LRESULT CALLBACK game_window_proc(HWND window,UINT message,WPARAM wp,LPAR
 static void hook_game_window(HWND window){
     wchar_t name[16];
     if(game_proc||!window||!GetClassNameW(window,name,16)||wcscmp(name,L"SDL_app"))return;
-    game_proc=(WNDPROC)SetWindowLongPtrW(window,GWLP_WNDPROC,(LONG_PTR)game_window_proc);
+    game_proc=(WNDPROC)SetWindowLongPtrW(window,GWLP_WNDPROC,(LONG_PTR)game_window_proc);game_sdl_window=window;
+}
+// While a controller is played, the hidden cursor is also held in the game window: Steam's
+// desktop layout moves it with the Steam Controller's trackpad (when the game is not started
+// from Steam), and a click outside the window would take the focus from the game.
+static int cursor_clipped;
+static void release_cursor(void){if(cursor_clipped){ClipCursor(NULL);cursor_clipped=0;fprintf(stderr,"PAD cursor released\n");}}
+static void clip_cursor(int on){
+    RECT client,current;
+    if(!on||!GetClientRect(game_sdl_window,&client)||client.right<=0||client.bottom<=0){release_cursor();return;}
+    POINT a={0,0},b={client.right,client.bottom};ClientToScreen(game_sdl_window,&a);ClientToScreen(game_sdl_window,&b);
+    const RECT area={a.x,a.y,b.x,b.y};
+    if(!cursor_clipped){static int registered;if(!registered){registered=1;atexit(release_cursor);}fprintf(stderr,"PAD cursor held in the game window\n");}
+    // Windows drops the clip when another window takes the foreground; it is set again here.
+    if(!cursor_clipped||!GetClipCursor(&current)||memcmp(&current,&area,sizeof(area)))ClipCursor(&area);
+    cursor_clipped=1;
 }
 // The cursor changes when it next moves; this applies the change while it rests on the window.
 static void refresh_cursor(HWND window){
@@ -325,6 +323,10 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
         }
     }else{memset(swipe_keys,0,sizeof(swipe_keys));swipe_direction=-1;mouse_anchored=mouse_touch=0;}
     if((sdl||xinput)!=pad_in_use){pad_in_use=sdl||xinput;refresh_cursor(game_window);}
+    // Not while the touchpad window (F5) is shown: it is clicked with the mouse.
+    const HWND panel_window=pad_panel_window();
+    clip_cursor(focused&&pad_in_use&&!mouse_mode&&game_sdl_window&&GetForegroundWindow()==game_sdl_window&&!IsIconic(game_sdl_window)&&
+        !(panel_window&&IsWindowVisible(panel_window)));
     // The touchpad window (F5): a finger where it is pressed and dragged (Shift: two, mirrored),
     // the right button clicks; its buttons press the sides, swipe and switch the modes.
     PadPanel panel;pad_panel_read(&panel);
