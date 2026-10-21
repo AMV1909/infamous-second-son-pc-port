@@ -7,21 +7,14 @@ from pathlib import Path
 import subprocess
 import sys
 
+import toolchain
+
 ROOT = Path(__file__).resolve().parents[1]
-VARS = Path(r'C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat')
-CLANG = ROOT.parent / 'tools/llvm/bin/clang-cl.exe'
+CLANG = toolchain.clang()
 
 
 def build(output):
-    result = subprocess.run(f'cmd.exe /d /s /c ""{VARS}" >nul && set"', capture_output=True,
-                            text=True, check=True)
-    env = os.environ.copy()
-    for line in result.stdout.splitlines():
-        if '=' in line:
-            key, value = line.split('=', 1)
-            env[key] = value
-    env['PATH'] = str(CLANG.parent) + os.pathsep + env.get('Path', env.get('PATH', ''))
-    env.pop('Path', None)
+    env = toolchain.environment(CLANG)
     output.parent.mkdir(parents=True, exist_ok=True)
     work = ROOT / 'out' / 'launcher-build'
     work.mkdir(parents=True, exist_ok=True)

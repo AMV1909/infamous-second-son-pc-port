@@ -9,22 +9,17 @@ import json
 import shutil
 import argparse
 
+import toolchain
+
 ROOT = Path(__file__).resolve().parents[1]
-VARS = Path(r'C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat')
-CLANG = ROOT.parent / 'tools/llvm/bin/clang-cl.exe'
+VARS = toolchain.vcvars()
+CLANG = toolchain.clang()
 
 def build(output=None):
     if not VARS.exists() or not CLANG.exists():
-        raise RuntimeError('Requires the existing VS2022 SDK and tools/llvm/bin/clang-cl.exe')
-    result = subprocess.run(f'cmd.exe /d /s /c ""{VARS}" >nul && set"',
-                            capture_output=True, text=True, check=True)
-    env = os.environ.copy()
-    for line in result.stdout.splitlines():
-        if '=' in line:
-            key, value = line.split('=', 1)
-            env[key] = value
-    env['PATH'] = str(CLANG.parent) + os.pathsep + env.get('Path', env.get('PATH', ''))
-    env.pop('Path', None)
+        raise RuntimeError('Requires Visual Studio with the C++ tools (vcvars64.bat) and clang-cl '
+                           '(tools/llvm/bin or the VS "C++ Clang Compiler for Windows" component)')
+    env = toolchain.environment(CLANG)
     out = ROOT / 'out'
     out.mkdir(exist_ok=True)
     executable = Path(output).resolve() if output is not None else out/'iss-probe.exe'
@@ -33,7 +28,7 @@ def build(output=None):
     from content_profile import create
     create()
     native_objects=[]
-    for name in ('reduction','feedback_identity','hooks','geometry','geometry_hook','engine_draw'):
+    for name in ('reduction','feedback_identity','hooks','geometry','geometry_hook','engine_draw','ultrawide'):
         obj=out/f'native-{name}.obj'
         subprocess.run([str(CLANG),'/nologo','/std:c++20','/EHsc','/W4','/WX','/O2','/MD','/D_CRT_SECURE_NO_WARNINGS','/arch:AVX2','/fp:precise','/c',str(ROOT/f'native/{name}.cpp'),f'/Fo:{obj}'],cwd=out,env=env,check=True)
         native_objects.append(str(obj))

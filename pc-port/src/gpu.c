@@ -17,6 +17,17 @@ static int (*dialog_open)(const IssDialog *);
 static int (*dialog_poll)(IssDialogResult *);
 static void (*dialog_close)(void);
 static int (*dialog_active)(void);
+// The window's first size: 1280x720, or 720 high in the aspect of ISS_RESOLUTION (native/ultrawide.cpp),
+// narrowed to 90% of the screen. The picture is fitted to whatever size the window gets.
+static void window_size(uint32_t *width,uint32_t *height){
+    *width=1280;*height=720;
+    const char *resolution=getenv("ISS_RESOLUTION");unsigned w=0,h=0;
+    if(!resolution||sscanf(resolution,"%ux%u",&w,&h)!=2||!w||!h)return;
+    const double aspect=(double)w/h,limit=GetSystemMetrics(SM_CXSCREEN)*0.9;
+    double window_w=720*aspect,window_h=720;
+    if(limit>0&&window_w>limit){window_w=limit;window_h=limit/aspect;}
+    *width=(uint32_t)window_w&~1u;*height=(uint32_t)window_h&~1u;
+}
 int gpu_start(uint32_t sdk_version,uint64_t image_base){
     const char *enabled=getenv("ISS_GPU");if(!enabled||strcmp(enabled,"1"))return 0;
     char path[2048];GetModuleFileNameA(NULL,path,sizeof(path));char *slash=strrchr(path,'\\');if(!slash)return -1;strcpy(slash,"\\iss-gpu.dll");
@@ -32,7 +43,7 @@ int gpu_start(uint32_t sdk_version,uint64_t image_base){
     dialog_close=(void *)GetProcAddress(dll,"iss_gpu_dialog_close");dialog_active=(void *)GetProcAddress(dll,"iss_gpu_dialog_active");
     if(!initialize||!resolve_import||!handle_fault||!mapped)return -1;
     IssGpuCallbacks callbacks={0};callbacks.struct_size=sizeof(callbacks);callbacks.sdk_version=sdk_version;
-    callbacks.psf_attributes=545259522;callbacks.width=1280;callbacks.height=720;
+    callbacks.psf_attributes=545259522;window_size(&callbacks.width,&callbacks.height);
     callbacks.serial="CUSA00004";callbacks.title="inFAMOUS Second Son";callbacks.user_dir=runtime_user_root();
     callbacks.tsc_frequency=runtime_tsc_frequency;callbacks.process_time_us=runtime_process_time_us;
     callbacks.errno_location=runtime_errno;callbacks.backing=memory_backing;callbacks.clamp=memory_clamp;
