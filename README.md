@@ -111,6 +111,7 @@ The whole controller is on the keyboard too, while the game window has the focus
   - resolution: 16:9 up to 4K, 21:9 (2560x1080, 3440x1440), 24:10 (3840x1600), 32:9 (3840x1080, 5120x1440), or Desktop (your monitor's);
   - field of view: 90% to 130% of the game's;
   - HUD width: on screens wider than 16:9 the HUD edges stay in a centred 16:9 or 21:9 area, or go to the full width.
+  - GPU memory: Auto reads the game's memory from copies in video memory on NVIDIA (`ISS_UNIFIED_MEMORY=0`) and in place elsewhere. On an RTX 5070 Ti the in-place reads went over PCIe: the tiled lighting shader took 33-50 ms per frame, 22 FPS instead of 117 at 1080p.
 
   Wider than 16:9 keeps the game's vertical view and shows more to the sides (Hor+); the menus and HUD keep their size. See [Ultrawide](#ultrawide).
 - **Game:** the language, from the 14 the CUSA00004 package ships: English, French, Italian, German, Spanish, Dutch, Portuguese, Russian, Polish and Turkish (text and voices), Danish, Finnish, Norwegian and Swedish (subtitles, English voices).

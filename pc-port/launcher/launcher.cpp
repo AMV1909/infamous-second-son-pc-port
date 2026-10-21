@@ -98,6 +98,11 @@ std::vector<Setting> g_settings = {
      {{L"Wait", "0"}, {L"Skip", "1"}}, TabGraphics},
     {"blackbox", L"GPU crash diagnostics", L"Writes a report if the GPU hangs.",
      {{L"On", "1"}, {L"Off", "0"}}, TabAdvanced},
+    // ISS_UNIFIED_MEMORY: the GPU reads the game's memory in place (1) or from copies in video
+    // memory (0). On an RTX 5070 Ti the in-place reads went over PCIe and the tiled lighting
+    // shader (cs ce1675e0) took 33-50 ms instead of 0.9: 22 FPS instead of 117 at 1080p.
+    {"gpu_memory", L"GPU memory", L"Auto: copies in video memory on NVIDIA, in place on others.",
+     {{L"Auto", "auto"}, {L"In place", "1"}, {L"Video memory", "0"}}, TabGraphics},
     // The languages of the CUSA00004 package (the PS4 system language ids, src/services.c
     // ISS_LANGUAGE): ten with voices, the four Nordic ones subtitles only (English voices).
     {"language", L"Language", L"Text and voices. Nordic languages: subtitles only.",
@@ -227,6 +232,17 @@ std::string ResolutionValue() {
     if (!EnumDisplaySettingsW(nullptr, ENUM_CURRENT_SETTINGS, &mode) || !mode.dmPelsWidth || !mode.dmPelsHeight)
         return "1920x1080";
     return std::to_string(mode.dmPelsWidth) + "x" + std::to_string(mode.dmPelsHeight);
+}
+
+// ISS_UNIFIED_MEMORY: "0" with an NVIDIA display adapter in the system when set to Auto, else "1".
+std::string UnifiedMemoryValue() {
+    const std::string value = SettingValue("gpu_memory");
+    if (value != "auto") return value;
+    DISPLAY_DEVICEW device{};
+    device.cb = sizeof(device);
+    for (DWORD i = 0; EnumDisplayDevicesW(nullptr, i, &device, 0); ++i)
+        if (wcsstr(device.DeviceString, L"NVIDIA")) return "0";
+    return "1";
 }
 
 // An override from launcher.ini (dev and testing), else the default under the root.
@@ -691,6 +707,7 @@ std::wstring LaunchGame(HWND notify) {
     env[L"ISS_HUD_ASPECT"] = Widen(SettingValue("hud_width"));
     env[L"ISS_ASYNC_SKIP_DRAWS"] = Widen(SettingValue("shader_mode"));
     env[L"ISS_GPU_BLACKBOX"] = Widen(SettingValue("blackbox"));
+    env[L"ISS_UNIFIED_MEMORY"] = Widen(UnifiedMemoryValue());
     env[L"ISS_LANGUAGE"] = Widen(SettingValue("language"));
     if (const std::string map = PadMapString(); !map.empty()) env[L"ISS_PAD_MAP"] = Widen(map);
     {
