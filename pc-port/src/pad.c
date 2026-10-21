@@ -28,7 +28,7 @@ static uint64_t touch_start;
 static SDL_Gamepad *sdl_pad;
 static uint64_t scan_tick,sensor_tick;
 static float quaternion[4]={0,0,0,1},accel_gain=1,gravity[3];
-static int pad_in_use;
+static int pad_in_use,pad_touching;
 static int sdl_ready;
 static int swipe_direction=-1,swipe_keys[4];
 static uint64_t swipe_started;
@@ -135,6 +135,10 @@ static int read_sdl(PadData *out,int contacts[2],uint16_t xy[2][2]){
     const SDL_GamepadType type=SDL_GetGamepadType(sdl_pad);
     apply_map(type==SDL_GAMEPAD_TYPE_PS4||type==SDL_GAMEPAD_TYPE_PS5?playstation_map:pad_map,pressed,lt,rt,out,contacts,xy);
     if(SDL_GetGamepadButton(sdl_pad,SDL_GAMEPAD_BUTTON_TOUCHPAD))out->buttons|=0x100000;
+    // A finger on any touchpad (the Steam Controller's two trackpads too) is the controller in use.
+    pad_touching=0;
+    for(int t=0;t<SDL_GetNumGamepadTouchpads(sdl_pad);++t)for(int i=0;i<SDL_GetNumGamepadTouchpadFingers(sdl_pad,t);++i){bool down=false;
+        if(SDL_GetGamepadTouchpadFinger(sdl_pad,t,i,&down,NULL,NULL,NULL)&&down)pad_touching=1;}
     if(SDL_GetNumGamepadTouchpads(sdl_pad)>0){int fingers=SDL_GetNumGamepadTouchpadFingers(sdl_pad,0);
         for(int i=0;i<2&&i<fingers;++i){bool down=false;float x=0,y=0,pressure=0;
             if(SDL_GetGamepadTouchpadFinger(sdl_pad,0,i,&down,&x,&y,&pressure)&&down){contacts[i]=1;xy[i][0]=touch_coord(x,1919);xy[i][1]=touch_coord(y,941);}}}
@@ -189,10 +193,9 @@ void pad_spray_step(float q[4],float dx,float dy,float dt,int shake,double secon
     if(shake){const float phase=(float)(6.283185307*6.0*seconds);accel[0]+=1.6f*sinf(phase);angular[2]+=4.0f*cosf(phase);}
 }
 // The game window's procedure, wrapped once (the game's SDL window, not the save dialog): the
-// cursor is hidden over the window in spray mode, and while a controller is played unless the
-// mouse is the touchpad (F6).
+// cursor is hidden over the window in spray mode, and while the controller is played (not the
+// keyboard and mouse) unless the mouse is the touchpad (F6).
 static WNDPROC game_proc;
-static HWND game_sdl_window;
 static int cursor_hidden(void){return mouse_mode==2||(mouse_mode==0&&pad_in_use);}
 static LRESULT CALLBACK game_window_proc(HWND window,UINT message,WPARAM wp,LPARAM lp){
     if(message==WM_SETCURSOR&&cursor_hidden()&&LOWORD(lp)==HTCLIENT){SetCursor(NULL);return TRUE;}
@@ -201,22 +204,19 @@ static LRESULT CALLBACK game_window_proc(HWND window,UINT message,WPARAM wp,LPAR
 static void hook_game_window(HWND window){
     wchar_t name[16];
     if(game_proc||!window||!GetClassNameW(window,name,16)||wcscmp(name,L"SDL_app"))return;
-    game_proc=(WNDPROC)SetWindowLongPtrW(window,GWLP_WNDPROC,(LONG_PTR)game_window_proc);game_sdl_window=window;
+    game_proc=(WNDPROC)SetWindowLongPtrW(window,GWLP_WNDPROC,(LONG_PTR)game_window_proc);
 }
-// While a controller is played, the hidden cursor is also held in the game window: Steam's
-// desktop layout moves it with the Steam Controller's trackpad (when the game is not started
-// from Steam), and a click outside the window would take the focus from the game.
-static int cursor_clipped;
-static void release_cursor(void){if(cursor_clipped){ClipCursor(NULL);cursor_clipped=0;fprintf(stderr,"PAD cursor released\n");}}
-static void clip_cursor(int on){
-    RECT client,current;
-    if(!on||!GetClientRect(game_sdl_window,&client)||client.right<=0||client.bottom<=0){release_cursor();return;}
-    POINT a={0,0},b={client.right,client.bottom};ClientToScreen(game_sdl_window,&a);ClientToScreen(game_sdl_window,&b);
-    const RECT area={a.x,a.y,b.x,b.y};
-    if(!cursor_clipped){static int registered;if(!registered){registered=1;atexit(release_cursor);}fprintf(stderr,"PAD cursor held in the game window\n");}
-    // Windows drops the clip when another window takes the foreground; it is set again here.
-    if(!cursor_clipped||!GetClipCursor(&current)||memcmp(&current,&area,sizeof(area)))ClipCursor(&area);
-    cursor_clipped=1;
+// The cursor is hidden while the controller is played, and shown again once the keyboard or the
+// mouse is used: input Windows counts (GetLastInputInfo) while the controller has been still
+// for half a second. Steam's desktop layout turns the Steam Controller's trackpad and buttons into
+// mouse and key input, which comes with the controller's own activity.
+static int played_with_pad(int connected,int active){
+    static int keyboard_mouse;static DWORD last_input;static ULONGLONG pad_active;
+    const ULONGLONG now=GetTickCount64();
+    if(active){pad_active=now;keyboard_mouse=0;}
+    LASTINPUTINFO info={sizeof(info),0};
+    if(GetLastInputInfo(&info)&&info.dwTime!=last_input){if(last_input&&now-pad_active>500)keyboard_mouse=1;last_input=info.dwTime;}
+    return connected&&!keyboard_mouse;
 }
 // The cursor changes when it next moves; this applies the change while it rests on the window.
 static void refresh_cursor(HWND window){
@@ -269,6 +269,10 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
         for(int i=0;i<SRC_COUNT;++i)pressed[i]=i==SRC_LT?lt>30:i==SRC_RT?rt>30:xb[i]&&(g->wButtons&xb[i]);
         apply_map(pad_map,pressed,lt,rt,out,contacts,xy);
     }
+    // The controller's own activity (the keyboard is read below): a button, a trigger, a stick off
+    // its centre or a finger on a touchpad.
+    const int active=out->buttons||out->l2>30||out->r2>30||(sdl&&pad_touching)||abs(out->lx-128)>24||abs(out->ly-128)>24||
+        abs(out->rx-128)>24||abs(out->ry-128)>24;
     if(pad_swipe>=0){swipe_direction=pad_swipe;swipe_started=out->timestamp;was_touch[0]=0;pad_swipe=-1;}
     DWORD foreground=0;GetWindowThreadProcessId(GetForegroundWindow(),&foreground);
     const int focused=foreground==GetCurrentProcessId();
@@ -322,11 +326,8 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
             }
         }
     }else{memset(swipe_keys,0,sizeof(swipe_keys));swipe_direction=-1;mouse_anchored=mouse_touch=0;}
-    if((sdl||xinput)!=pad_in_use){pad_in_use=sdl||xinput;refresh_cursor(game_window);}
-    // Not while the touchpad window (F5) is shown: it is clicked with the mouse.
-    const HWND panel_window=pad_panel_window();
-    clip_cursor(focused&&pad_in_use&&!mouse_mode&&game_sdl_window&&GetForegroundWindow()==game_sdl_window&&!IsIconic(game_sdl_window)&&
-        !(panel_window&&IsWindowVisible(panel_window)));
+    if(played_with_pad(sdl||xinput,active)!=pad_in_use){pad_in_use=!pad_in_use;refresh_cursor(game_window);
+        fprintf(stderr,"PAD input from the %s\n",pad_in_use?"controller":"keyboard and mouse");}
     // The touchpad window (F5): a finger where it is pressed and dragged (Shift: two, mirrored),
     // the right button clicks; its buttons press the sides, swipe and switch the modes.
     PadPanel panel;pad_panel_read(&panel);
