@@ -102,8 +102,11 @@ static int32_t GUEST_ABI save_icon(const Point *point,const Icon *icon){
     if(ok)ok=MoveFileExA(temporary,path,MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)!=0;
     ReleaseSRWLockExclusive(&lock);return ok?0:err(11);
 }
+// sceSaveDataTransferringMount (First Light): the saves another title passes on. None here: not found.
+static int32_t GUEST_ABI transferring_mount(const void *p,void *out){(void)p;(void)out;return err(8);}
 uintptr_t save_resolve(const char *identity){
     if(!strstr(identity,"#libSceSaveData#1#libSceSaveData#257"))return 0;const char *api=runtime_api_name(identity);
+    if(!strncmp(identity,"WAzWTZm1H+I#",12))return (uintptr_t)transferring_mount;
 #define API(n,f) if(!strcmp(api,n))return (uintptr_t)f
     API("sceSaveDataInitialize3",initialize);API("sceSaveDataTerminate",terminate);API("sceSaveDataMount2",mount_save);
     API("sceSaveDataUmount",umount_save);API("sceSaveDataSetParam",set_param);API("sceSaveDataDirNameSearch",search);

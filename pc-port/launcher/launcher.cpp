@@ -2342,9 +2342,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
         CoUninitialize();
         return 0;
     }
-    // launcher.exe [--game second-son|first-light] [--play]. --game picks the game (else the one
-    // chosen last, user\game.txt). --play: the game at once with the saved settings (a Steam launch
-    // option). The launcher shows no window and waits for the game, then finishes its session;
+    // launcher.exe [--game second-son|first-light] [--play]. --game picks the game; without it the
+    // window opens on the one chosen last (user\game.txt) and --play starts Second Son (the
+    // shortcuts made before First Light). --play: the game at once with the saved settings (a Steam
+    // launch option). The launcher shows no window and waits for the game, then finishes its session;
     // without a game folder or prepared files it opens as usual and presses PLAY itself.
     bool play_at_start = false;
     const Game* game = FindGame([] {
@@ -2354,12 +2355,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     }());
     {
         int argc = 0;
+        bool named = false;
         wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
         for (int i = 1; argv && i < argc; ++i) {
             if (!wcscmp(argv[i], L"--play")) play_at_start = true;
-            else if (!wcscmp(argv[i], L"--game") && i + 1 < argc) game = FindGame(Narrow(argv[++i]));
+            else if (!wcscmp(argv[i], L"--game") && i + 1 < argc) game = FindGame(Narrow(argv[++i])), named = true;
         }
         if (argv) LocalFree(argv);
+        if (play_at_start && !named) game = &kGames[0];
     }
     for (const auto& s : g_settings) g_default_settings.push_back(s.index);
     // Second Son's settings first: a game without its own launcher.ini yet starts from them.
