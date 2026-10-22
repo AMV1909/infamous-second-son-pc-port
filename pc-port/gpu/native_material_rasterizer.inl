@@ -519,13 +519,13 @@ void Rasterizer::NativeMaterialLearn(u64 state_key, const GraphicsPipeline* pipe
     t->key = Mix(state_key, MaterialHash(*shape));
     {
         std::unique_lock lock{tables.mutex};
-        if (tables.templates.size() >= 131072) tables.templates.clear();
+        if (tables.templates.size() >= 131072) iss::DestroyInBackground(tables.templates);
         const auto& live = scheduler.GetDynamicState();
         const u64 dynamic_hash = XXH3_64bits(&live, DynamicBytes);
         auto& shared = tables.dynamics[dynamic_hash];
         if (!shared || std::memcmp(shared.get(), &live, DynamicBytes) != 0) {
             if (tables.dynamics.size() > 8192) {
-                tables.dynamics.clear();
+                iss::DestroyInBackground(tables.dynamics);
                 tables.dynamics[dynamic_hash] = nullptr;
             }
             auto copy = std::make_shared<DynamicState>(live);

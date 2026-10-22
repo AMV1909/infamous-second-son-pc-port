@@ -1063,7 +1063,7 @@ void Rasterizer::NativeComputeLearn(u64 key, const ComputePipeline* pipeline,
     t->order = order;
     {
         std::unique_lock lock{tables.mutex};
-        if (tables.templates.size() >= 65536) tables.templates.clear();
+        if (tables.templates.size() >= 65536) iss::DestroyInBackground(tables.templates);
         tables.shapes.try_emplace(key, pipeline);
         tables.templates[t->key] = std::move(t);
     }
