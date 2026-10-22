@@ -98,6 +98,14 @@ std::vector<Setting> g_settings = {
      {{L"Wait", "0"}, {L"Skip", "1"}}, TabGraphics},
     {"blackbox", L"GPU crash diagnostics", L"Writes a report if the GPU hangs.",
      {{L"On", "1"}, {L"Off", "0"}}, TabAdvanced},
+    // ISS_GPU_PROFILE=1: GPU timestamps around the command processor's submissions
+    // (vk_scheduler.cpp), the GPU time of each frame in frames.csv (gpu_completed_work_ms).
+    {"perf_log", L"Performance log", L"Records the GPU time of each frame in the session log.",
+     {{L"Off", "0"}, {L"On", "1"}}, TabAdvanced},
+    // gpu/freeze_watchdog.cpp: ISS_FREEZE_WATCHDOG_MS (freeze-<n>.txt after 3 s without a frame)
+    // and ISS_CRASH_THREADS (crash-threads.txt on a crash), in the session's log folder.
+    {"diagnostics", L"Freeze and crash reports", L"Writes what every thread was doing when the game froze or crashed.",
+     {{L"Off", "0"}, {L"On", "1"}}, TabAdvanced},
     // ISS_UNIFIED_MEMORY: the GPU reads the game's memory in place (1) or from copies in video
     // memory (0). On an RTX 5070 Ti the in-place reads went over PCIe and the tiled lighting
     // shader (cs ce1675e0) took 33-50 ms instead of 0.9: 22 FPS instead of 117 at 1080p.
@@ -755,6 +763,10 @@ std::wstring LaunchGame(HWND notify) {
     env[L"ISS_HUD_ASPECT"] = Widen(SettingValue("hud_width"));
     env[L"ISS_ASYNC_SKIP_DRAWS"] = Widen(SettingValue("shader_mode"));
     env[L"ISS_GPU_BLACKBOX"] = Widen(SettingValue("blackbox"));
+    env[L"ISS_GPU_PROFILE"] = Widen(SettingValue("perf_log"));
+    const bool reports = !strcmp(SettingValue("diagnostics"), "1");
+    env[L"ISS_FREEZE_WATCHDOG_MS"] = reports ? L"3000" : L"0";
+    env[L"ISS_CRASH_THREADS"] = reports ? L"1" : L"0";
     env[L"ISS_UNIFIED_MEMORY"] = Widen(UnifiedMemoryValue());
     env[L"ISS_LANGUAGE"] = Widen(SettingValue("language"));
     // Started from Steam, its Fossilize layer records every pipeline the game creates (thousands:
@@ -1394,20 +1406,23 @@ void Paint(HDC hdc, int width, int height) {
             ry += S(56);
         }
         if (g_tab == TabAdvanced) {
+            // The folder actions in a second column: below the settings they ran off the window.
+            const float ax = left + row_w + S(30), aw = S(300);
+            float ay = ty + S(46);
             for (int a = 0; a < ActCount; ++a) {
                 const int id = HotAction0 + a;
-                const RectF row(left - S(10), ry - S(4), row_w, S(34));
+                const RectF row(ax - S(10), ay - S(4), aw, S(34));
                 const float t = lit(id);
                 SolidBrush brush(Mix(kText, kYellow, t));
-                g.DrawString(kActionNames[a], -1, &label, PointF(left + S(4) * t, ry), &brush);
+                g.DrawString(kActionNames[a], -1, &label, PointF(ax + S(4) * t, ay), &brush);
                 if (a == ActDlcFolder) {
                     const std::wstring summary = DlcSummary();
                     RectF vbox;
                     g.MeasureString(summary.c_str(), -1, &hint, PointF(0, 0), &vbox);
-                    g.DrawString(summary.c_str(), -1, &hint, PointF(left + row_w - S(28) - vbox.Width, ry + S(3)), &dim_brush);
+                    g.DrawString(summary.c_str(), -1, &hint, PointF(ax + aw - S(28) - vbox.Width, ay + S(3)), &dim_brush);
                 }
                 g_spots.push_back({row, id});
-                ry += S(36);
+                ay += S(36);
             }
         }
         menu_item(L"BACK", HotBack, ry + S(8));

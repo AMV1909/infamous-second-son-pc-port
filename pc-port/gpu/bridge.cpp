@@ -55,6 +55,7 @@ namespace iss { extern std::atomic<unsigned> g_preload_entries, g_preload_total;
 #include "video_core/renderdoc.h"
 #include "video_core/cache_storage.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
+#include "freeze_watchdog.h"
 namespace iss::diagnostics {void RecordReadbackTime(u64 rip,u64 address,u64 elapsed,unsigned kind);}
 
 Frontend::WindowSDL *g_window=nullptr;
@@ -355,6 +356,7 @@ extern "C" int iss_gpu_initialize(const IssGpuCallbacks *callbacks){
     if(!callbacks||callbacks->struct_size!=sizeof(host)||!callbacks->backing||!callbacks->clamp||!callbacks->visit_mappings||!callbacks->protect||!callbacks->mapping_epoch||!callbacks->mapping_lock_shared||!callbacks->mapping_unlock_shared)return -1;
     host=*callbacks;
     iss::timeline::Emit("gpu_initialize",0,0,host.image_base);
+    iss::freeze_watchdog::SetImageBase(host.image_base);
     // The executing image (as native/engine_draw.cpp patches it), not a backing view.
     if(iss::native_shadow::Enabled())
         iss::native_shadow::Install(host.image_base,reinterpret_cast<const unsigned char*>(host.image_base+0x43D590));

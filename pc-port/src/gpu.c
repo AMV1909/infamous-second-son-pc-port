@@ -10,6 +10,8 @@ static int (*handle_fault)(void *,void *);
 static int (*readback_memory)(uint64_t,uint64_t);
 static int (*invalidate_memory)(uint64_t,uint64_t);
 static void (*publish_feedback_identity)(uint64_t,uint64_t,uint64_t);
+// Every thread's stack into the session's crash-threads.txt (gpu/freeze_watchdog.cpp).
+static void (*dump_threads)(unsigned long);
 // A pack of the game opened: its shaders go first in the ahead-of-time compiler (ISS_AOT_COMPUTE).
 static void (*file_opened)(const char *);
 // The save data dialog drawn by the DLL over the game (gpu/save_dialog_ui.cpp).
@@ -41,6 +43,7 @@ int gpu_start(uint32_t sdk_version,uint64_t image_base){
     void (*mapped)(uint64_t,uint64_t,uint8_t *)=(void *)GetProcAddress(dll,"iss_gpu_map");
     dialog_open=(void *)GetProcAddress(dll,"iss_gpu_dialog_open");dialog_poll=(void *)GetProcAddress(dll,"iss_gpu_dialog_poll");
     dialog_close=(void *)GetProcAddress(dll,"iss_gpu_dialog_close");dialog_active=(void *)GetProcAddress(dll,"iss_gpu_dialog_active");
+    dump_threads=(void *)GetProcAddress(dll,"iss_gpu_dump_threads");
     if(!initialize||!resolve_import||!handle_fault||!mapped)return -1;
     IssGpuCallbacks callbacks={0};callbacks.struct_size=sizeof(callbacks);callbacks.sdk_version=sdk_version;
     callbacks.psf_attributes=545259522;window_size(&callbacks.width,&callbacks.height);
@@ -71,4 +74,14 @@ void gpu_feedback_identity(uint64_t owner_object,uint64_t shader_object,uint64_t
 int gpu_handle_fault(EXCEPTION_POINTERS *e){
     if(!handle_fault||e->ExceptionRecord->ExceptionCode!=EXCEPTION_ACCESS_VIOLATION||e->ExceptionRecord->NumberParameters<2)return 0;
     return handle_fault(e,(void *)e->ExceptionRecord->ExceptionInformation[1]);
+}
+static DWORD WINAPI dump_threads_thread(void *tid){dump_threads((unsigned long)(uintptr_t)tid);return 0;}
+// On its own thread, at most 3 s: a thread stopped in the middle of the heap or the loader must not
+// keep a crashed game from ending.
+// ISS_CRASH_THREADS=1 (the launcher's "Freeze and crash reports").
+void gpu_dump_threads(unsigned long tid){
+    const char *enabled=getenv("ISS_CRASH_THREADS");
+    if(!dump_threads||!enabled||strcmp(enabled,"1"))return;
+    HANDLE t=CreateThread(NULL,0,dump_threads_thread,(void *)(uintptr_t)tid,0,NULL);
+    if(t){WaitForSingleObject(t,3000);CloseHandle(t);}
 }

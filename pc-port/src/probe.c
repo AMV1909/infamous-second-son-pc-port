@@ -129,6 +129,7 @@ static LONG CALLBACK fault(EXCEPTION_POINTERS *exception) {
     printf("\"rdi\":\"0x%llx\",\"rsi\":\"0x%llx\"}\n",
            (unsigned long long)exception->ContextRecord->Rdi, (unsigned long long)exception->ContextRecord->Rsi);
     fflush(stdout);
+    gpu_dump_threads(GetCurrentThreadId()); // crash-threads.txt with ISS_CRASH_THREADS=1
     // A fatal diagnostic trap cannot unwind concurrent guest/GPU workers safely.
     // Terminate only this isolated probe after flushing its evidence; no DLL destructors.
     TerminateProcess(GetCurrentProcess(),(UINT)exit_code);

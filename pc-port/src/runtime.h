@@ -56,6 +56,8 @@ uint64_t runtime_process_time_us(void);
 int gpu_start(uint32_t sdk_version,uint64_t image_base);
 uintptr_t gpu_resolve(const char *identity);
 int gpu_handle_fault(EXCEPTION_POINTERS *exception);
+// The stacks of all threads into the session's log folder (crash-threads.txt).
+void gpu_dump_threads(unsigned long tid);
 int gpu_readback(uint64_t address,uint64_t size);
 int gpu_invalidate(uint64_t address,uint64_t size);
 int gpu_feedback_identity_available(void);
