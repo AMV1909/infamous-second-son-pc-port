@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <filesystem>
+#include <mutex>
 #include <thread>
 #include <unordered_map>
 #include "gpu_blackbox.h"
@@ -34,6 +36,57 @@ namespace VideoCore {
 
 static constexpr u64 PageShift = 12;
 static constexpr u64 NumFramesBeforeRemoval = 32;
+
+// iss: the image collector's bookkeeping for its periodic TEXTURE_GC line: the bytes of the
+// registered images (guest sizes) and the images the collector deleted that the game created
+// again (same address, size and format) within RecreateWindow gc ticks: textures it should
+// have kept.
+namespace {
+constexpr u64 RecreateWindow = 1800;
+struct GcStats {
+    std::mutex mutex;
+    std::unordered_map<u64, u64> deleted; // image key -> gc tick of its deletion by the collector
+    u64 recreated = 0, recreated_bytes = 0, deleted_bytes = 0;
+    std::atomic<u64> texture_bytes{0}, images{0};
+    u64 ticks_trigger = 0, ticks_pressured = 0, ticks_critical = 0;
+} g_gc;
+
+u64 GcImageKey(const ImageInfo& info) {
+    const u64 words[] = {info.guest_address, info.guest_size, u64(info.pixel_format),
+                         (u64(info.size.width) << 32) | info.size.height};
+    return XXH3_64bits(words, sizeof(words));
+}
+
+// ISS_GC_HEADROOM_MB=trigger:pressure:critical: the collector starts, presses and turns
+// aggressive when the free room left in the Vulkan heap budget (VK_EXT_memory_budget, queried
+// each tick) falls below these. Default 1536:1024:512 on every GPU; 0 turns it off (the
+// thresholds from the start-up budget). On the Steam Deck the start-up
+// budget was max(budget - usage - 8 GB, 2 GB) = 2 GB: trigger 0, critical 1.5 GB, against a
+// device usage of 7.8 GB (both heaps: 1 GB VRAM + 8 GB GTT, the imported unified heap included),
+// so every tick ran the aggressive pass and deleted up to 60 images idle for 80 ticks (86 000 in
+// a 13-minute session, 2026-10-21 16:48), which the game then created and uploaded again.
+// On an RTX 4060 (8 GB) the start-up thresholds were trigger 3217 / pressure 2515 / critical
+// 5031 MB of a 6289 MB budget: at the 4.85 GB the game uses every tick ran the pressured pass,
+// ~625 000 textures deleted in 31 minutes (2026-10-22). Discrete GPUs count the device-local
+// heaps only (Instance::valid_heaps); the driver's budget already leaves out other processes,
+// so even the critical threshold (512 MB below it) keeps the process inside its VRAM share.
+struct Headroom {
+    bool enabled = false;
+    u64 trigger = 0, pressure = 0, critical = 0;
+};
+Headroom ParseHeadroom() {
+    Headroom h{};
+    const char* p = std::getenv("ISS_GC_HEADROOM_MB");
+    if (!p) {
+        h = {true, 1536_MB, 1024_MB, 512_MB};
+        return h;
+    }
+    unsigned long long t = 0, pr = 0, c = 0;
+    if (std::sscanf(p, "%llu:%llu:%llu", &t, &pr, &c) == 3 && t != 0)
+        h = {true, u64(t) << 20, u64(pr) << 20, u64(c) << 20};
+    return h;
+}
+} // namespace
 
 void TextureCache::AssertNoAscTextureAccessSlow() const {
     if (liverpool && liverpool->CpSplitActive() && liverpool->IsCurrentCpThread()) {
@@ -125,6 +178,11 @@ TextureCache::TextureCache(const Vulkan::Instance& instance_, Vulkan::Scheduler&
                  (long long)(device_local_memory >> 20), (unsigned long long)(trigger_gc_memory >> 20),
                  (unsigned long long)(pressure_gc_memory >> 20),
                  (unsigned long long)(critical_gc_memory >> 20));
+    if (const Headroom h = ParseHeadroom(); h.enabled)
+        std::fprintf(stderr, "TEXTURE_GC headroom trigger=%llu MB pressure=%llu MB critical=%llu MB "
+                             "below the heap budget of each tick\n",
+                     (unsigned long long)(h.trigger >> 20), (unsigned long long)(h.pressure >> 20),
+                     (unsigned long long)(h.critical >> 20));
 }
 
 TextureCache::~TextureCache() {
@@ -1376,6 +1434,20 @@ void TextureCache::RegisterImage(ImageId image_id) {
     BumpGeneration();
     image.flags |= ImageFlagBits::Registered;
     total_used_memory += Common::AlignUp(image.info.guest_size, 1024);
+    g_gc.texture_bytes.fetch_add(image.info.guest_size, std::memory_order_relaxed);
+    g_gc.images.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::scoped_lock gc_lock{g_gc.mutex};
+        if (!g_gc.deleted.empty()) {
+            if (const auto it = g_gc.deleted.find(GcImageKey(image.info)); it != g_gc.deleted.end()) {
+                if (gc_tick - it->second <= RecreateWindow) {
+                    ++g_gc.recreated;
+                    g_gc.recreated_bytes += image.info.guest_size;
+                }
+                g_gc.deleted.erase(it);
+            }
+        }
+    }
     image.lru_id = lru_cache.Insert(image_id, gc_tick);
     ForEachPage(image.info.guest_address, image.info.guest_size, [this, image_id](u64 page) {
         page_table[page].push_back(image_id);
@@ -1404,6 +1476,8 @@ void TextureCache::UnregisterImage(ImageId image_id) {
                          image.info.size.height, vk::to_string(image.info.pixel_format).c_str());
     lru_cache.Free(image.lru_id);
     total_used_memory -= Common::AlignUp(image.info.guest_size, 1024);
+    g_gc.texture_bytes.fetch_sub(image.info.guest_size, std::memory_order_relaxed);
+    g_gc.images.fetch_sub(1, std::memory_order_relaxed);
     ForEachPage(image.info.guest_address, image.info.guest_size, [this, image_id](u64 page) {
         const auto page_it = page_table.find(page);
         if (page_it == nullptr) {
@@ -1541,17 +1615,69 @@ void TextureCache::UntrackImageTail(ImageId image_id) {
 
 void TextureCache::GarbageCollectImages() {
     static std::atomic<u64> spared{}, deleted{};
-    if (gc_tick % 600 == 0)
-        std::fprintf(stderr, "TEXTURE_GC spared=%llu deleted=%llu streak_images=%llu used=%llu MB trigger=%llu MB\n",
+    static const Headroom headroom =
+        instance.CanReportMemoryUsage() ? ParseHeadroom() : Headroom{};
+    static u64 heap_budget = 0;
+    if (gc_tick % 600 == 0) {
+        std::scoped_lock gc_lock{g_gc.mutex};
+        std::fprintf(stderr,
+                     "TEXTURE_GC spared=%llu deleted=%llu streak_images=%llu used=%llu MB trigger=%llu MB"
+                     " pressure=%llu MB critical=%llu MB heap_budget=%llu MB textures=%llu MB images=%llu"
+                     " gc_deleted=%llu MB recreated=%llu (%llu MB) ticks[trigger=%llu pressured=%llu"
+                     " critical=%llu]\n",
                      (unsigned long long)spared.load(), (unsigned long long)deleted.load(),
                      (unsigned long long)tex_streak_images.load(),
                      (unsigned long long)(total_used_memory >> 20),
-                     (unsigned long long)(trigger_gc_memory >> 20));
-    if (instance.CanReportMemoryUsage()) {
+                     (unsigned long long)(trigger_gc_memory >> 20),
+                     (unsigned long long)(pressure_gc_memory >> 20),
+                     (unsigned long long)(critical_gc_memory >> 20),
+                     (unsigned long long)(heap_budget >> 20),
+                     (unsigned long long)(g_gc.texture_bytes.load() >> 20),
+                     (unsigned long long)g_gc.images.load(),
+                     (unsigned long long)(g_gc.deleted_bytes >> 20), (unsigned long long)g_gc.recreated,
+                     (unsigned long long)(g_gc.recreated_bytes >> 20),
+                     (unsigned long long)g_gc.ticks_trigger, (unsigned long long)g_gc.ticks_pressured,
+                     (unsigned long long)g_gc.ticks_critical);
+        // Deletions older than the window can no longer count as recreated.
+        if (g_gc.deleted.size() > 65536) {
+            std::erase_if(g_gc.deleted, [this](const auto& entry) {
+                return gc_tick - entry.second > RecreateWindow;
+            });
+        }
+    }
+    if (headroom.enabled) {
+        // Usage and budget over the heaps of Instance::valid_heaps (integrated GPUs: all of
+        // them; discrete: the device-local ones), the thresholds the given room below the
+        // budget of now.
+        vk::PhysicalDeviceMemoryBudgetPropertiesEXT budget{};
+        vk::PhysicalDeviceMemoryProperties2 props{.pNext = &budget};
+        instance.GetPhysicalDevice().getMemoryProperties2(&props);
+        const bool integrated = instance.IsIntegrated();
+        u64 usage = 0;
+        heap_budget = 0;
+        for (u32 heap = 0; heap < props.memoryProperties.memoryHeapCount; ++heap) {
+            if (!integrated && !(props.memoryProperties.memoryHeaps[heap].flags &
+                                 vk::MemoryHeapFlagBits::eDeviceLocal))
+                continue;
+            usage += budget.heapUsage[heap];
+            heap_budget += budget.heapBudget[heap];
+        }
+        const auto below = [](u64 b, u64 room) { return b > room ? b - room : 0; };
+        total_used_memory = usage;
+        trigger_gc_memory = below(heap_budget, headroom.trigger);
+        pressure_gc_memory = below(heap_budget, headroom.pressure);
+        critical_gc_memory = below(heap_budget, headroom.critical);
+    } else if (instance.CanReportMemoryUsage()) {
         total_used_memory = instance.GetDeviceMemoryUsage();
     }
     if (total_used_memory < trigger_gc_memory) {
         return;
+    }
+    {
+        std::scoped_lock gc_lock{g_gc.mutex};
+        ++(total_used_memory >= critical_gc_memory   ? g_gc.ticks_critical
+           : total_used_memory >= pressure_gc_memory ? g_gc.ticks_pressured
+                                                     : g_gc.ticks_trigger);
     }
     std::scoped_lock lock{mutex};
     bool pressured = false;
@@ -1607,6 +1733,11 @@ void TextureCache::GarbageCollectImages() {
         }
         if (download) {
             DownloadImageMemory(image_id);
+        }
+        {
+            std::scoped_lock gc_lock{g_gc.mutex};
+            g_gc.deleted[GcImageKey(image.info)] = gc_tick;
+            g_gc.deleted_bytes += image.info.guest_size;
         }
         FreeImage(image_id);
         if (total_used_memory < critical_gc_memory) {
