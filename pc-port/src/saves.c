@@ -23,7 +23,7 @@ static int name_valid(const DirName *dir){if(!dir||!memchr(dir->name,0,32)||!dir
 static int root(int user,char *path,size_t size){
     if(user<0)return 0;char base[1200];snprintf(base,sizeof(base),"%s",runtime_save_root());CreateDirectoryA(base,NULL);
     snprintf(path,size,"%s\\%d",base,user);CreateDirectoryA(path,NULL);
-    snprintf(path,size,"%s\\%d\\CUSA00004",base,user);return CreateDirectoryA(path,NULL)||GetLastError()==ERROR_ALREADY_EXISTS;
+    snprintf(path,size,"%s\\%d\\%s",base,user,runtime_title_id());return CreateDirectoryA(path,NULL)||GetLastError()==ERROR_ALREADY_EXISTS;
 }
 static int32_t GUEST_ABI initialize(const void *p){(void)p;char path[1200];if(!root(1,path,sizeof(path)))return err(11);initialized=1;return 0;}
 static int32_t GUEST_ABI terminate(void){if(!initialized)return err(1);initialized=0;return 0;}

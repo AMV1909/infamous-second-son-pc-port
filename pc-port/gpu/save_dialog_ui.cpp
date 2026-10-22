@@ -16,6 +16,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <deque>
@@ -75,6 +76,12 @@ std::string DateText(int64_t mtime) {
     char buf[64];
     std::strftime(buf, sizeof(buf), "%Y/%m/%d   %H:%M", &tm);
     return buf;
+}
+
+// The game the launcher runs (ISS_GAME_NAME), else Second Son.
+const char* GameName() {
+    const char* name = std::getenv("ISS_GAME_NAME");
+    return name && *name ? name : "inFAMOUS\xE2\x84\xA2 Second Son";
 }
 
 const char* Heading(const IssDialog& d) {
@@ -185,7 +192,7 @@ void DrawList(ImDrawList* dl, State& s, ImVec2 a, ImVec2 b, float k, float alpha
     // Header.
     dl->AddText(g_bold, 40 * k, ImVec2(a.x + 40 * k, a.y + 28 * k), Col(255, 255, 255, alpha), Heading(d));
     dl->AddText(g_regular, 19 * k, ImVec2(a.x + 42 * k, a.y + 78 * k), Col(170, 182, 200, alpha),
-                "inFAMOUS\xE2\x84\xA2 Second Son");
+                GameName());
     dl->AddLine(ImVec2(a.x + 30 * k, a.y + 114 * k), ImVec2(b.x - 30 * k, a.y + 114 * k), Col(255, 255, 255, 0.10f * alpha));
 
     const ImVec2 la(a.x + 30 * k, a.y + 126 * k), lb(b.x - 30 * k, b.y - 76 * k);

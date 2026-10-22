@@ -19,7 +19,7 @@ static int32_t GUEST_ABI message_initialize(void){
     if(!initialized)return err(1);return InterlockedCompareExchange(&status,1,0)==0?0:err(4);
 }
 typedef struct { char message[8192]; UINT flags; } UiMessage;
-static DWORD WINAPI show(void *arg){UiMessage *m=arg;MessageBoxA(NULL,m->message,"inFAMOUS Second Son",m->flags);free(m);InterlockedExchange(&status,3);return 0;}
+static DWORD WINAPI show(void *arg){UiMessage *m=arg;MessageBoxA(NULL,m->message,runtime_game_name(),m->flags);free(m);InterlockedExchange(&status,3);return 0;}
 static int32_t GUEST_ABI message_open(const Params *p){
     if(status!=1&&status!=3)return err(6);if(!p)return err(13);
     if(p->size!=sizeof(*p)||p->base_size!=48)return err(10);

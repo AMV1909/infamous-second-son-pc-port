@@ -32,10 +32,10 @@ static int valid_name(const char *p){return p&&memchr(p,0,32)&&*p&&!strchr(p,'/'
 int save_dialog_blocking(void){return InterlockedCompareExchange(&sd_status,0,0)==2;}
 static void add_row(Job *j,int user,const SdDir *dir){
     if(j->count>=128||!valid_name(dir->name))return;
-    char path[1400];snprintf(path,sizeof(path),"%s\\%d\\CUSA00004\\%s",runtime_save_root(),user,dir->name);
+    char path[1400];snprintf(path,sizeof(path),"%s\\%d\\%s\\%s",runtime_save_root(),user,runtime_title_id(),dir->name);
     DWORD a=GetFileAttributesA(path);if(a==INVALID_FILE_ATTRIBUTES||!(a&FILE_ATTRIBUTE_DIRECTORY))return;
     Row *row=&j->rows[j->count];row->dir=*dir;
-    snprintf(path,sizeof(path),"%s\\%d\\CUSA00004\\%s.sce_sys\\param.bin",runtime_save_root(),user,dir->name);
+    snprintf(path,sizeof(path),"%s\\%d\\%s\\%s.sce_sys\\param.bin",runtime_save_root(),user,runtime_title_id(),dir->name);
     FILE *f=fopen(path,"rb");if(f){fread(&row->meta,1,sizeof(row->meta),f);fclose(f);}
     snprintf(row->label,sizeof(row->label),"%s - %.127s",dir->name,row->meta.subtitle[0]?row->meta.subtitle:row->meta.title);++j->count;
 }
@@ -61,7 +61,7 @@ static int open_ui(Job *j){
         snprintf(it->subtitle,sizeof(it->subtitle),"%s",r->meta.subtitle);
         snprintf(it->detail,sizeof(it->detail),"%.255s",r->meta.detail);
         it->mtime=r->meta.mtime;
-        snprintf(it->icon_path,sizeof(it->icon_path),"%s\\%d\\CUSA00004\\%s.sce_sys\\icon0.png",runtime_save_root(),j->user,r->dir.name);
+        snprintf(it->icon_path,sizeof(it->icon_path),"%s\\%d\\%s\\%s.sce_sys\\icon0.png",runtime_save_root(),j->user,runtime_title_id(),r->dir.name);
     }
     const int ok=gpu_dialog_open(d)==0;free(d);return ok?0:-1;
 }
@@ -97,7 +97,8 @@ static LRESULT CALLBACK procedure(HWND w,UINT m,WPARAM wp,LPARAM lp){
 }
 static DWORD WINAPI show_save(void *p){
     Job *j=p;WNDCLASSA wc={0};wc.lpfnWndProc=procedure;wc.hInstance=GetModuleHandleA(NULL);wc.lpszClassName="IssSaveDialog";wc.hCursor=LoadCursor(NULL,IDC_ARROW);wc.hbrBackground=(HBRUSH)(COLOR_BTNFACE+1);RegisterClassA(&wc);
-    HWND w=CreateWindowExA(WS_EX_DLGMODALFRAME|WS_EX_TOPMOST,wc.lpszClassName,"inFAMOUS Second Son - Saved Data",WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_VISIBLE,CW_USEDEFAULT,CW_USEDEFAULT,590,400,NULL,NULL,wc.hInstance,j);
+    char title[200];snprintf(title,sizeof(title),"%s - Saved Data",runtime_game_name());
+    HWND w=CreateWindowExA(WS_EX_DLGMODALFRAME|WS_EX_TOPMOST,wc.lpszClassName,title,WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_VISIBLE,CW_USEDEFAULT,CW_USEDEFAULT,590,400,NULL,NULL,wc.hInstance,j);
     if(w){SetForegroundWindow(w);MSG msg;while(GetMessageA(&msg,NULL,0,0)>0){if(!IsDialogMessageA(w,&msg)){TranslateMessage(&msg);DispatchMessageA(&msg);}}if(IsWindow(w))DestroyWindow(w);}
     else j->result=1;
     InterlockedExchange(&sd_status,3);return 0;

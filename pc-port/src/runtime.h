@@ -33,6 +33,9 @@ uintptr_t kernel_sync_resolve(const char *identity);
 uintptr_t http_resolve(const char *identity);
 const char *runtime_user_root(void);
 const char *runtime_save_root(void);
+// The game the launcher runs (ISS_TITLE_ID, ISS_GAME_NAME); inFAMOUS Second Son when unset.
+const char *runtime_title_id(void);
+const char *runtime_game_name(void);
 // The save data dialog of iss-gpu.dll (gpu/iss_dialog.h), when the DLL has it.
 int gpu_dialog_available(void);
 int gpu_dialog_open(const void *dialog);
