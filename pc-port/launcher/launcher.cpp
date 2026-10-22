@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// inFAMOUS Second Son PC port launcher (2026-10-18). A portable folder:
+// inFAMOUS Second Son PC port launcher (2026-10-18), also for inFAMOUS First Light. A portable folder:
 //   <root>\inFAMOUS Second Son Launcher.exe   this program
 //   <root>\bin\                                 iss-probe.exe, iss-gpu.dll, SDL3.dll
 //   <root>\shaders\                             optional: library-v2\ (pipeline library), seed\
 //   <root>\user\                                launcher.ini, prepared\, saves\, shader-cache\, logs\
+//   <root>\user\first-light\                    the same for inFAMOUS First Light
+//   <root>\user\game.txt                         the game last chosen (second-son, first-light)
 // The game itself is never shipped: on first launch the user picks their own inFAMOUS Second Son
 // (CUSA00004 or CUSA00223) folder. The window art comes from that folder too: sce_sys\pic1.png (the
 // crow, as on the loading screen) behind the menu, darkened on the left. The logo is <root>\assets\logo.png
@@ -50,7 +52,7 @@ namespace {
 // ---------------------------------------------------------------------------------------------
 // Paths and settings
 // ---------------------------------------------------------------------------------------------
-fs::path g_root, g_bin, g_user;
+fs::path g_root, g_bin, g_user_base, g_user; // g_user: the current game's (user\ or user\first-light\)
 
 struct Choice {
     const wchar_t* label;
@@ -115,25 +117,48 @@ std::vector<Setting> g_settings = {
     {"language", L"Language", L"", {}, TabGame},
 };
 
-// The editions the port runs. Their eboot.bin and sce_module are byte identical (the SHA-256
-// prepare_game.cpp checks); only the language packages (art\cache\lang_*) differ. The languages
-// are PS4 system language ids (src/services.c ISS_LANGUAGE), which the game uses as the index of
-// its own lang_%s_%s%s.xpp name table (english=1, french=2, ..., brazilian=17, latino=20).
+// The games the port runs. Each has its own files under user\ (its game folder, settings,
+// prepared image, saves, shader cache and logs); the runtime gets its title id and name
+// (ISS_TITLE_ID: the saves and shader cache folder, ISS_GAME_NAME).
+struct Game {
+    const char* key;          // --game <key>, user\game.txt
+    const wchar_t* name;      // window titles and messages
+    const char* env_name;     // ISS_GAME_NAME
+    const char* title_id;     // ISS_TITLE_ID (both Second Son editions keep CUSA00004's folders)
+    const wchar_t* subtitle;  // the title in type, under "inFAMOUS"
+    const char* user_dir;     // under user\ ("" for user\ itself)
+    bool second_son_art;      // the release's shaders, logo and crow icon are Second Son's
+};
+const Game kGames[] = {
+    {"second-son", L"inFAMOUS Second Son", "inFAMOUS Second Son", "CUSA00004", L"SECOND SON", "", true},
+    {"first-light", L"inFAMOUS First Light", "inFAMOUS First Light", "CUSA00897", L"FIRST LIGHT",
+     "first-light", false},
+};
+const Game* g_game_info = &kGames[0];
+
+// The editions the port runs. Second Son's two have byte identical eboot.bin and sce_module (the
+// SHA-256 prepare_game.cpp checks); only the language packages (art\cache\lang_*) differ. The
+// languages are PS4 system language ids (src/services.c ISS_LANGUAGE), which the game uses as the
+// index of its own lang_%s_%s%s.xpp name table (english=1, french=2, ..., brazilian=17, latino=20).
 struct Edition {
     const char* title_id;
+    const Game* game;
     const wchar_t* language_hint;
     std::vector<Choice> languages;
 };
+const std::vector<Choice> kEuropeLanguages = {
+    {L"English", "1"}, {L"French", "2"}, {L"Italian", "5"}, {L"German", "4"}, {L"Spanish", "3"},
+    {L"Dutch", "6"}, {L"Portuguese", "7"}, {L"Russian", "8"}, {L"Polish", "16"}, {L"Turkish", "19"},
+    {L"Danish", "14"}, {L"Finnish", "12"}, {L"Norwegian", "15"}, {L"Swedish", "13"}};
 const Edition kEditions[] = {
     // Europe: ten with voices, the four Nordic ones subtitles only (English voices).
-    {"CUSA00004", L"Text and voices. Nordic languages: subtitles only.",
-     {{L"English", "1"}, {L"French", "2"}, {L"Italian", "5"}, {L"German", "4"}, {L"Spanish", "3"},
-      {L"Dutch", "6"}, {L"Portuguese", "7"}, {L"Russian", "8"}, {L"Polish", "16"}, {L"Turkish", "19"},
-      {L"Danish", "14"}, {L"Finnish", "12"}, {L"Norwegian", "15"}, {L"Swedish", "13"}}},
+    {"CUSA00004", &kGames[0], L"Text and voices. Nordic languages: subtitles only.", kEuropeLanguages},
     // North America: four, all with voices.
-    {"CUSA00223", L"Text and voices.",
+    {"CUSA00223", &kGames[0], L"Text and voices.",
      {{L"English", "1"}, {L"French", "2"}, {L"Spanish (Latin America)", "20"},
       {L"Portuguese (Brazil)", "17"}}},
+    // First Light, Europe: the same languages as Second Son's (art\cache\lang_*).
+    {"CUSA00897", &kGames[1], L"Text and voices. Nordic languages: subtitles only.", kEuropeLanguages},
 };
 void ApplyEdition(const std::string& language);
 std::wstring g_game_dir;
@@ -285,24 +310,45 @@ fs::path PathOption(const char* key, const fs::path& fallback) {
 // ---------------------------------------------------------------------------------------------
 // The game folder
 // ---------------------------------------------------------------------------------------------
-bool FileContains(const fs::path& path, const char* needle) {
+std::string ReadText(const fs::path& path) {
     std::ifstream f(path, std::ios::binary);
-    std::string data((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-    return data.find(needle) != std::string::npos;
+    return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
+// The TITLE_ID of a param.sfo, else empty. (The file names other titles too: First Light's lists
+// Second Son's ids.) Header: key table at 8, data table at 12, entry count at 16; 16 byte entries
+// from 20: key offset (u16), format (u16), length (u32), max length (u32), data offset (u32).
+std::string SfoTitleId(const fs::path& path) {
+    const std::string d = ReadText(path);
+    auto u32 = [&](size_t at) { return at + 4 <= d.size() ? *reinterpret_cast<const uint32_t*>(d.data() + at) : 0u; };
+    if (d.size() < 20 || d.compare(0, 4, std::string("\0PSF", 4)) != 0) return {};
+    const uint32_t keys = u32(8), data = u32(12), count = u32(16);
+    for (uint32_t i = 0; i < count && 20 + i * 16 + 16 <= d.size(); ++i) {
+        const size_t e = 20 + size_t(i) * 16;
+        const size_t key = keys + *reinterpret_cast<const uint16_t*>(d.data() + e);
+        if (key >= d.size() || strcmp(d.c_str() + key, "TITLE_ID")) continue;
+        const size_t at = size_t(data) + u32(e + 12), len = u32(e + 4);
+        if (at + len > d.size()) return {};
+        return std::string(d.c_str() + at, strnlen(d.c_str() + at, len));
+    }
+    return {};
 }
 
 // The edition of a game folder (its sce_sys\param.sfo title id), else null.
 const Edition* GameEdition(const fs::path& dir) {
+    const std::string id = SfoTitleId(dir / "sce_sys" / "param.sfo");
     for (const auto& e : kEditions)
-        if (FileContains(dir / "sce_sys" / "param.sfo", e.title_id)) return &e;
+        if (id == e.title_id) return &e;
     return nullptr;
 }
 
-// The language choices of the game folder's edition (the first one without a game folder),
+// The language choices of the game folder's edition (the game's first one without a game folder),
 // keeping language when that edition has it, else its first language (English).
 void ApplyEdition(const std::string& language) {
     const Edition* e = g_game_dir.empty() ? nullptr : GameEdition(g_game_dir);
-    if (!e) e = &kEditions[0];
+    if (!e || e->game != g_game_info)
+        e = &*std::find_if(std::begin(kEditions), std::end(kEditions),
+                           [](const Edition& x) { return x.game == g_game_info; });
     Setting& s = *std::find_if(g_settings.begin(), g_settings.end(),
                                [](const Setting& x) { return !strcmp(x.key, "language"); });
     s.hint = e->language_hint;
@@ -312,7 +358,7 @@ void ApplyEdition(const std::string& language) {
         if (language == s.choices[i].value) s.index = int(i);
 }
 
-// Empty when the folder is an inFAMOUS Second Son game folder (an edition of kEditions), else the
+// Empty when the folder is a game folder of the current game (an edition of kEditions), else the
 // reason.
 std::wstring CheckGameDir(const fs::path& dir) {
     std::error_code ec;
@@ -320,8 +366,15 @@ std::wstring CheckGameDir(const fs::path& dir) {
     if (!fs::is_regular_file(dir / "eboot.bin", ec)) return L"eboot.bin is missing in this folder.";
     if (!fs::is_regular_file(dir / "sce_sys" / "param.sfo", ec))
         return L"sce_sys\\param.sfo is missing in this folder.";
-    if (!GameEdition(dir))
-        return L"This is not inFAMOUS Second Son (CUSA00004 or CUSA00223).";
+    const Edition* edition = GameEdition(dir);
+    if (edition && edition->game != g_game_info)
+        return L"This is " + std::wstring(edition->game->name) + L": switch to it in the main menu first.";
+    if (!edition) {
+        std::wstring ids;
+        for (const auto& e : kEditions)
+            if (e.game == g_game_info) ids += (ids.empty() ? L"" : L" or ") + Widen(e.title_id);
+        return L"This is not " + std::wstring(g_game_info->name) + L" (" + ids + L").";
+    }
     if (!fs::is_regular_file(dir / "sce_module" / "libc.prx", ec))
         return L"sce_module\\libc.prx is missing in this folder.";
     return {};
@@ -336,7 +389,7 @@ std::wstring PickFolder(HWND owner) {
     DWORD options = 0;
     dialog->GetOptions(&options);
     dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
-    dialog->SetTitle(L"Select your inFAMOUS Second Son (CUSA00004 or CUSA00223) game folder");
+    dialog->SetTitle((L"Select your " + std::wstring(g_game_info->name) + L" game folder").c_str());
     if (SUCCEEDED(dialog->Show(owner))) {
         IShellItem* item = nullptr;
         if (SUCCEEDED(dialog->GetResult(&item))) {
@@ -518,13 +571,15 @@ fs::path PrepareCache(bool library, const std::function<void(float)>& progress =
     }
     // An older launcher's full copy of the cache before its last update (now: rollback\).
     if (fs::exists(lineage / "previous", ec)) fs::rename(lineage / "previous", lineage / ("old-previous-" + tag), ec);
-    const fs::path seed = PathOption("shader_seed", g_root / "shaders" / "seed");
-    if (!fs::is_regular_file(current / "CUSA00004" / "profile.bin", ec)) {
+    const fs::path seed = g_game_info->second_son_art ? PathOption("shader_seed", g_root / "shaders" / "seed")
+                                                      : fs::path();
+    const std::string title = g_game_info->title_id;
+    if (!fs::is_regular_file(current / title / "profile.bin", ec)) {
         fs::remove_all(current, ec);
-        fs::create_directories(current / "CUSA00004", ec);
-        if (fs::is_regular_file(seed / "CUSA00004" / "profile.bin", ec)) {
+        fs::create_directories(current / title, ec);
+        if (!seed.empty() && fs::is_regular_file(seed / title / "profile.bin", ec)) {
             if (library)
-                fs::copy_file(seed / "CUSA00004" / "profile.bin", current / "CUSA00004" / "profile.bin",
+                fs::copy_file(seed / title / "profile.bin", current / title / "profile.bin",
                               fs::copy_options::overwrite_existing, ec);
             else
                 fs::copy(seed, current, fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
@@ -535,11 +590,6 @@ fs::path PrepareCache(bool library, const std::function<void(float)>& progress =
     fs::rename(current, work, ec);
     if (progress) progress(1.0f);
     return ec ? current : work; // something holds the folder open: the session uses current itself
-}
-
-std::string ReadText(const fs::path& path) {
-    std::ifstream f(path, std::ios::binary);
-    return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 }
 
 // After the game: keeps what a clean session added (to be verified by the next one), undoes a
@@ -646,7 +696,9 @@ std::vector<std::string> ScanDlcLabels(const fs::path& dir) {
         if (memcmp(header, "\x7f" "CNT", 4) != 0) continue;
         const std::string id(header + 0x40, 36);
         if (std::none_of(std::begin(kEditions), std::end(kEditions),
-                         [&](const Edition& e) { return id.find(e.title_id) != std::string::npos; }))
+                         [&](const Edition& e) {
+                             return e.game == g_game_info && id.find(e.title_id) != std::string::npos;
+                         }))
             continue;
         const std::string label = id.substr(20, 16);
         if (std::find(labels.begin(), labels.end(), label) == labels.end()) labels.push_back(label);
@@ -659,18 +711,20 @@ fs::path DlcDir() { return PathOption("dlc_dir", {}); }
 // The game window's icon: the crow emblem of the game's own sce_sys\pic1.png (the launcher's
 // background), a square around it, brightened to read on a dark taskbar. Written as a BMP for the
 // game (ISS_WINDOW_ICON, SDL_LoadBMP); empty when it cannot be made.
+// First Light: its sce_sys\icon0.png as it is.
 fs::path MakeGameIcon() {
     const fs::path out = g_user / "game-icon.bmp";
-    Gdiplus::Bitmap pic((fs::path(g_game_dir) / "sce_sys" / "pic1.png").c_str());
+    const bool crow = g_game_info->second_son_art;
+    Gdiplus::Bitmap pic((fs::path(g_game_dir) / "sce_sys" / (crow ? "pic1.png" : "icon0.png")).c_str());
     if (pic.GetLastStatus() != Gdiplus::Ok) return {};
-    const float w = float(pic.GetWidth()), h = float(pic.GetHeight()), side = h * 0.9f;
-    const Gdiplus::RectF src(w * 0.5f - side / 2, h * 0.47f - side / 2, side, side);
+    const float w = float(pic.GetWidth()), h = float(pic.GetHeight()), side = crow ? h * 0.9f : h;
+    const Gdiplus::RectF src(w * 0.5f - side / 2, crow ? h * 0.47f - side / 2 : 0, side, side);
     Gdiplus::Bitmap icon(256, 256, PixelFormat24bppRGB);
     {
         Gdiplus::Graphics g(&icon);
         g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
         g.Clear(Gdiplus::Color(255, 0, 0, 0));
-        const float k = 2.4f; // the emblem is dark grey on black
+        const float k = crow ? 2.4f : 1.0f; // the emblem is dark grey on black
         Gdiplus::ColorMatrix cm = {{{k, 0, 0, 0, 0}, {0, k, 0, 0, 0}, {0, 0, k, 0, 0}, {0, 0, 0, 1, 0}, {0, 0, 0, 0, 1}}};
         Gdiplus::ImageAttributes attr;
         attr.SetColorMatrix(&cm);
@@ -699,6 +753,7 @@ constexpr UINT WM_GAME_EXIT = WM_APP + 1;
 // (library-v2, development) is used instead when present.
 fs::path ShaderLibrary() {
     std::error_code ec;
+    if (!g_game_info->second_son_art) return {};
     return PathOption("shader_library",
                       fs::is_regular_file(g_root / "shaders" / "library-v2" / "manifest.json", ec)
                           ? g_root / "shaders" / "library-v2"
@@ -743,6 +798,8 @@ std::wstring LaunchGame(HWND notify) {
     }
     for (const auto& kv : kGameEnvironment) env[Widen(kv[0])] = Widen(kv[1]);
     env[L"ISS_GAME_DIR"] = g_game_dir;
+    env[L"ISS_TITLE_ID"] = Widen(g_game_info->title_id);
+    env[L"ISS_GAME_NAME"] = Widen(g_game_info->env_name);
     if (const fs::path icon = MakeGameIcon(); !icon.empty()) env[L"ISS_WINDOW_ICON"] = icon.wstring();
     env[L"ISS_SAVE_ROOT"] = saves.wstring();
     env[L"ISS_PIPELINE_CACHE_ROOT"] = g_session.cache_work.wstring();
@@ -827,8 +884,9 @@ void LoadArt() {
     auto bg = std::make_unique<Bitmap>((sys / "pic1.png").c_str());
     if (bg->GetLastStatus() == Ok) g_background = std::move(bg);
     auto logo_file = std::make_unique<Bitmap>((g_root / "assets" / "logo.png").c_str());
-    const bool has_logo = logo_file->GetLastStatus() == Ok;
-    if (has_logo) g_logo = std::move(logo_file);
+    // Second Son's logo; First Light's icon0 is a picture (the title in type instead).
+    const bool has_logo = logo_file->GetLastStatus() == Ok || !g_game_info->second_son_art;
+    if (has_logo && g_game_info->second_son_art) g_logo = std::move(logo_file);
     Bitmap icon((sys / "icon0.png").c_str());
     if (icon.GetLastStatus() != Ok) return;
     if (!has_logo) {
@@ -931,7 +989,7 @@ std::vector<BYTE> PngOfSize(Bitmap& src, int size) {
 }
 
 void ApplyExeIcon() {
-    if (!CheckGameDir(g_game_dir).empty()) return;
+    if (!g_game_info->second_son_art || !CheckGameDir(g_game_dir).empty()) return;
     wchar_t self_buf[MAX_PATH];
     GetModuleFileNameW(nullptr, self_buf, MAX_PATH);
     const fs::path self = self_buf, old = self.wstring() + L".old", next = self.wstring() + L".new";
@@ -981,6 +1039,43 @@ void ApplyExeIcon() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// The game: Second Son or First Light, each with its own user folder
+// ---------------------------------------------------------------------------------------------
+const Game* OtherGame() { return g_game_info == &kGames[0] ? &kGames[1] : &kGames[0]; }
+
+std::wstring SwitchLabel() { return L"SWITCH TO " + std::wstring(OtherGame()->subtitle); }
+
+const Game* FindGame(const std::string& key) {
+    for (const auto& g : kGames)
+        if (key == g.key) return &g;
+    return nullptr;
+}
+
+std::vector<int> g_default_settings; // the choices before any launcher.ini was read
+
+// Makes game the current one: its user folder and its launcher.ini. A game without one yet starts
+// from the current settings and controller layout, with no game folder.
+void SelectGame(const Game* game) {
+    g_game_info = game;
+    g_user = *game->user_dir ? g_user_base / game->user_dir : g_user_base;
+    std::error_code ec;
+    fs::create_directories(g_user_base, ec);
+    std::ofstream(g_user_base / "game.txt", std::ios::trunc) << game->key << "\n";
+    g_game_dir.clear();
+    if (fs::exists(ConfigPath(), ec)) {
+        for (size_t i = 0; i < g_settings.size() && i < g_default_settings.size(); ++i)
+            g_settings[i].index = g_default_settings[i];
+        g_extra.clear();
+        LoadConfig();
+    } else {
+        const std::string language = SettingValue("language"), pad = PadMapString();
+        g_extra.clear();
+        if (!pad.empty()) g_extra["pad_map"] = pad;
+        ApplyEdition(language);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // UI: drawn on a 960x600 canvas scaled to the window (on a Steam Deck or any screen up to
 // 1280x800 the launcher opens borderless fullscreen). Mouse, keyboard and controllers (XInput:
 // Steam Input on the Deck, Xbox pads, PlayStation pads through Steam) move a focus between items.
@@ -998,7 +1093,7 @@ std::unique_ptr<FontFamily> g_oswald;
 
 enum Hot {
     HotNone, HotClose, HotMinimize, HotPlay, HotSettings, HotQuit, HotBack, HotBrowse, HotBrowseDlc,
-    HotContinue, HotControllers, HotMapReset, HotMapDone, HotHelp, HotTab0 = 20, HotSetting0 = 100, HotAction0 = 200,
+    HotContinue, HotControllers, HotMapReset, HotMapDone, HotHelp, HotSwitchGame, HotTab0 = 20, HotSetting0 = 100, HotAction0 = 200,
     HotMap0 = 300
 };
 struct Spot {
@@ -1061,7 +1156,7 @@ float SpacedWidth(Graphics& g, const wchar_t* text, const Font& font, float spac
 std::vector<int> FocusOrder() {
     std::vector<int> order;
     switch (g_screen) {
-    case Screen::Main: order = {HotPlay, HotSettings, HotControllers, HotQuit, HotHelp}; break;
+    case Screen::Main: order = {HotPlay, HotSettings, HotControllers, HotSwitchGame, HotQuit, HotHelp}; break;
     case Screen::Controllers:
         for (int i = 0; i < kPadSourceCount; ++i) order.push_back(HotMap0 + i);
         order.insert(order.end(), {HotMapReset, HotMapDone, HotHelp});
@@ -1069,6 +1164,7 @@ std::vector<int> FocusOrder() {
     case Screen::Setup:
         order = {HotBrowse};
         if (CheckGameDir(g_game_dir).empty()) order.insert(order.end(), {HotBrowseDlc, HotContinue});
+        order.push_back(HotSwitchGame);
         order.push_back(HotQuit);
         break;
     case Screen::Settings:
@@ -1218,7 +1314,7 @@ void BuildBackdrop(int width, int height, float bar) {
 
 // Items the sliding bar can sit behind (rows and text menu entries).
 bool BarItem(int id) {
-    return id == HotSettings || id == HotQuit || id == HotBack || id == HotControllers ||
+    return id == HotSettings || id == HotQuit || id == HotBack || id == HotControllers || id == HotSwitchGame ||
            id == HotMapReset || id == HotMapDone || (id >= HotMap0 && id < HotMap0 + kPadSourceCount) ||
            (id >= HotSetting0 && id < HotSetting0 + int(g_settings.size())) ||
            (id >= HotAction0 && id < HotAction0 + ActCount);
@@ -1313,7 +1409,7 @@ void Paint(HDC hdc, int width, int height) {
             Font small_title(oswald, S(22), FontStyleRegular, UnitPixel);
             SpacedText(g, L"inFAMOUS", small_title, text_brush, left + S(2), y, S(3));
             Font big(oswald, S(52), FontStyleBold, UnitPixel);
-            g.DrawString(L"SECOND SON", -1, &big, PointF(left - S(2), y + S(22)), &yellow);
+            g.DrawString(g_game_info->subtitle, -1, &big, PointF(left - S(2), y + S(22)), &yellow);
             y += S(104);
         }
     }
@@ -1325,7 +1421,7 @@ void Paint(HDC hdc, int width, int height) {
     Font tab_font(oswald, S(15), FontStyleRegular, UnitPixel);
 
     auto menu_item = [&](const wchar_t* text, int id, float at) {
-        const RectF box(left, at, S(270), S(40));
+        const RectF box(left, at, S(340), S(40));
         const float t = lit(id);
         SolidBrush brush(Mix(kText, kYellow, t));
         SpacedText(g, text, menu, brush, left + S(16) + S(4) * t, at + S(4), S(3));
@@ -1358,7 +1454,8 @@ void Paint(HDC hdc, int width, int height) {
             g_spots.push_back({play, HotPlay});
             menu_item(L"SETTINGS", HotSettings, y + S(70));
             menu_item(L"CONTROLS", HotControllers, y + S(120));
-            menu_item(L"QUIT", HotQuit, y + S(170));
+            menu_item(SwitchLabel().c_str(), HotSwitchGame, y + S(170));
+            menu_item(L"QUIT", HotQuit, y + S(220));
         }
     } else if (g_screen == Screen::Settings) {
         float tx = left;
@@ -1537,9 +1634,11 @@ void Paint(HDC hdc, int width, int height) {
                              PointF(left + S(184), y2 + S(40)), &dim_brush);
             }
             button(L"CONTINUE", HotContinue, RectF(left, y2 + S(124), S(250), S(44)), true);
-            menu_item(L"QUIT", HotQuit, y2 + S(178));
+            menu_item(SwitchLabel().c_str(), HotSwitchGame, y2 + S(178));
+            menu_item(L"QUIT", HotQuit, y2 + S(228));
         } else {
-            menu_item(L"QUIT", HotQuit, y + S(84));
+            menu_item(SwitchLabel().c_str(), HotSwitchGame, y + S(84));
+            menu_item(L"QUIT", HotQuit, y + S(134));
         }
     }
 
@@ -1634,7 +1733,8 @@ void Paint(HDC hdc, int width, int height) {
         SolidBrush bar_brush(kBar);
         frame.FillRectangle(&bar_brush, RectF(0, 0, float(width), bar));
         Font title_font(oswald, S(13), FontStyleRegular, UnitPixel);
-        SpacedText(frame, L"inFAMOUS SECOND SON", title_font, dim_brush, S(14), S(7), S(1.5f));
+        SpacedText(frame, (L"inFAMOUS " + std::wstring(g_game_info->subtitle)).c_str(), title_font, dim_brush,
+                   S(14), S(7), S(1.5f));
         const float bw = S(40);
         RectF close(width - bw, 0, bw, bar), minimize(width - 2 * bw, 0, bw, bar);
         const float tc = lit(HotClose), tm = lit(HotMinimize);
@@ -1713,7 +1813,7 @@ void ChooseDlcFolder() {
     if (dir.empty()) return;
     const auto labels = ScanDlcLabels(dir);
     if (labels.empty()) {
-        SetStatus(L"No inFAMOUS Second Son DLC (.pkg) found in that folder.");
+        SetStatus(L"No " + std::wstring(g_game_info->name) + L" DLC (.pkg) found in that folder.");
         return;
     }
     g_extra["dlc_dir"] = Narrow(dir);
@@ -1787,6 +1887,19 @@ void Activate(int id) {
         g_screen = Screen::Running;
         SetStatus(L"Game running. The launcher comes back when it closes.");
         ShowWindow(g_hwnd, SW_MINIMIZE);
+    } else if (id == HotSwitchGame) {
+        SaveConfig();
+        SelectGame(OtherGame());
+        LoadArt();
+        g_backdrop.reset();
+        ApplyIcon();
+        SetWindowTextW(g_hwnd, g_game_info->name);
+        Restart();
+        const bool has_game = CheckGameDir(g_game_dir).empty();
+        g_screen = has_game ? Screen::Main : Screen::Setup;
+        g_focus = has_game ? HotPlay : HotBrowse;
+        SetStatus(L"");
+        if (has_game && !PreparedReady()) StartPreparation(false);
     } else if (id == HotSettings) {
         Restart();
         g_screen = Screen::Settings;
@@ -2157,7 +2270,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_CLOSE:
         if (g_game && MessageBoxW(hwnd, L"The game is still running. Close the launcher anyway?",
-                                  L"inFAMOUS Second Son", MB_YESNO | MB_ICONQUESTION) != IDYES)
+                                  g_game_info->name, MB_YESNO | MB_ICONQUESTION) != IDYES)
             return 0;
         DestroyWindow(hwnd);
         return 0;
@@ -2187,7 +2300,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     GetModuleFileNameW(nullptr, self, MAX_PATH);
     g_root = fs::path(self).parent_path();
     g_bin = g_root / "bin";
-    g_user = g_root / "user";
+    g_user_base = g_user = g_root / "user";
     // launcher.exe --finish <log dir> <cache work> <game pid>: the hidden watcher of a session.
     {
         int argc = 0;
@@ -2195,6 +2308,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
         if (argv && argc == 5 && !wcscmp(argv[1], L"--finish")) {
             g_session.log_dir = argv[2];
             g_session.cache_work = argv[3];
+            g_user = g_session.cache_work.parent_path().parent_path(); // <game's user>\shader-cache\session
             if (HANDLE game = OpenProcess(SYNCHRONIZE, FALSE, DWORD(_wtoi(argv[4])))) {
                 WaitForSingleObject(game, INFINITE);
                 CloseHandle(game);
@@ -2228,19 +2342,31 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
         CoUninitialize();
         return 0;
     }
-    const bool first_run = !fs::exists(ConfigPath());
-    LoadConfig();
-    if (first_run && SmallScreen()) g_settings[0].index = 1; // the game fullscreen on a Deck
-    // launcher.exe --play: the game at once with the saved settings (a Steam launch option). The
-    // launcher shows no window and waits for the game, then finishes its session; without a game
-    // folder or prepared files it opens as usual and presses PLAY itself.
+    // launcher.exe [--game second-son|first-light] [--play]. --game picks the game (else the one
+    // chosen last, user\game.txt). --play: the game at once with the saved settings (a Steam launch
+    // option). The launcher shows no window and waits for the game, then finishes its session;
+    // without a game folder or prepared files it opens as usual and presses PLAY itself.
     bool play_at_start = false;
+    const Game* game = FindGame([] {
+        std::string key;
+        std::ifstream(g_user_base / "game.txt") >> key;
+        return key;
+    }());
     {
         int argc = 0;
         wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-        play_at_start = argv && argc == 2 && !wcscmp(argv[1], L"--play");
+        for (int i = 1; argv && i < argc; ++i) {
+            if (!wcscmp(argv[i], L"--play")) play_at_start = true;
+            else if (!wcscmp(argv[i], L"--game") && i + 1 < argc) game = FindGame(Narrow(argv[++i]));
+        }
         if (argv) LocalFree(argv);
     }
+    for (const auto& s : g_settings) g_default_settings.push_back(s.index);
+    // Second Son's settings first: a game without its own launcher.ini yet starts from them.
+    const bool first_run = !fs::exists(ConfigPath());
+    LoadConfig();
+    if (first_run && SmallScreen()) g_settings[0].index = 1; // the game fullscreen on a Deck
+    if (game && game != g_game_info) SelectGame(game);
     if (play_at_start && CheckGameDir(g_game_dir).empty() && PreparedReady()) {
         std::error_code ec;
         g_session.cache_work = PrepareCache(fs::is_regular_file(ShaderLibrary() / "manifest.json", ec));
@@ -2253,7 +2379,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
             g_game = nullptr;
             FinishCache(g_session);
         } else {
-            MessageBoxW(nullptr, why.c_str(), L"inFAMOUS Second Son", MB_OK | MB_ICONERROR);
+            MessageBoxW(nullptr, why.c_str(), g_game_info->name, MB_OK | MB_ICONERROR);
         }
         GdiplusShutdown(gdi_token);
         CoUninitialize();
@@ -2278,7 +2404,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     wc.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(1));
     RegisterClassExW(&wc);
 
-    g_hwnd = CreateWindowExW(WS_EX_APPWINDOW, wc.lpszClassName, L"inFAMOUS Second Son",
+    g_hwnd = CreateWindowExW(WS_EX_APPWINDOW, wc.lpszClassName, g_game_info->name,
                              WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_SYSMENU, CW_USEDEFAULT,
                              CW_USEDEFAULT, 960, 600, nullptr, nullptr, instance, nullptr);
     const MARGINS shadow{1, 1, 1, 1};

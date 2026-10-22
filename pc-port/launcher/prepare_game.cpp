@@ -35,7 +35,12 @@ using u64 = std::uint64_t;
 using s64 = std::int64_t;
 using Bytes = std::vector<u8>;
 
-constexpr const char* ExpectedEboot = "2d1ca79630d7bbe6fa29575f59aa7996d43071d74ac8e4f7d40137967d9039ab";
+// The eboot.bin builds the port runs: inFAMOUS Second Son 1.07 (CUSA00004 and CUSA00223 ship the
+// same one) and inFAMOUS First Light 1.04 (CUSA00897).
+constexpr const char* ExpectedEboots[] = {
+    "2d1ca79630d7bbe6fa29575f59aa7996d43071d74ac8e4f7d40137967d9039ab",
+    "693dc18504f30ae106bcd33cbb0c1d29a3dbbdb330754ee9dc2194ca6b56e240",
+};
 
 [[noreturn]] void Fail(const std::string& why) { throw std::runtime_error(why); }
 
@@ -465,9 +470,10 @@ std::wstring PrepareGame(const fs::path& game, const fs::path& out_file,
         progress(0.05f, L"Reading eboot.bin");
         std::vector<Module> mods;
         mods.push_back(LoadModule(game / "eboot.bin", true));
-        if (mods[0].sha256 != ExpectedEboot)
-            return L"Unsupported eboot.bin version: this port needs the decrypted retail build of "
-                   L"inFAMOUS Second Son (CUSA00004 or CUSA00223, the same eboot.bin) it was made for.";
+        if (std::none_of(std::begin(ExpectedEboots), std::end(ExpectedEboots),
+                         [&](const char* sha) { return mods[0].sha256 == sha; }))
+            return L"Unsupported eboot.bin version: this port needs the decrypted retail build it was made "
+                   L"for (inFAMOUS Second Son 1.07: CUSA00004 or CUSA00223; inFAMOUS First Light 1.04: CUSA00897).";
         progress(0.55f, L"Reading sce_module");
         mods.push_back(LoadModule(game / "sce_module" / "libc.prx", false));
         mods.push_back(LoadModule(game / "sce_module" / "libSceFios2.prx", false));
