@@ -119,6 +119,19 @@ The whole controller is on the keyboard too, while the game window has the focus
   - CUSA00223 (North America), 4: English, French, Spanish (Latin America) and Portuguese (Brazil), all with text and voices.
 - **CONTROLS:** the controller layout described above.
 - **Shader cache:** it builds up from session to session. A session that crashes is rolled back, so a bad cache never sticks.
+- **Advanced:** the diagnostics below, and folders (DLC, game, saves, logs) and clearing the shader cache.
+
+### Diagnostics
+
+Each session writes `stdout.log`, `stderr.log` and `frames.csv` (the time of every frame) to `user\logs\<date-time>\`; the launcher keeps the last five sessions. Three switches on the ADVANCED page add more, all off except the first:
+
+| Setting | What it writes | Cost |
+|---|---|---|
+| GPU crash diagnostics (on) | `gpu-stall-<n>.txt` when the GPU stops for over 1 s, `gpu-crash.txt` when the device is lost (`.txt` and `.json`) | GPU breadcrumbs on every submission |
+| Performance log | the GPU time of each frame, `gpu_completed_work_ms` in `frames.csv` | GPU timestamps on every submission |
+| Freeze and crash reports | `freeze-<n>.txt` when no frame was shown for 3 s (again at 9 s), `crash-threads.txt` on a crash: every thread's name, CPU time and stack (module+offset with the nearest export, `eboot+offset` in game code) | none until a freeze or a crash |
+
+For a bug report: turn on *Freeze and crash reports*, play until it happens, and attach the session's folder (Open logs folder). Frames in `iss-gpu.dll` are named with `iss-gpu.map` of the same build.
 ## Ultrawide
 
 `pc-port/native/ultrawide.cpp` patches the game before it starts (each patched function is checked against the 1.07 eboot first):

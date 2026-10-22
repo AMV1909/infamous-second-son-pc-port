@@ -83,6 +83,8 @@ static int translate(const char *path,char *out,size_t size,int write) {
 }
 const char *runtime_user_root(void){InitOnceExecuteOnce(&initialize_once,initialize,NULL,NULL);return user_root;}
 const char *runtime_save_root(void){InitOnceExecuteOnce(&initialize_once,initialize,NULL,NULL);return save_root;}
+const char *runtime_title_id(void){const char *v=getenv("ISS_TITLE_ID");return v&&*v?v:"CUSA00004";}
+const char *runtime_game_name(void){const char *v=getenv("ISS_GAME_NAME");return v&&*v?v:"inFAMOUS Second Son";}
 int runtime_file_mount(unsigned slot,const char *guest,const char *host,int readonly){
     if(slot>=16||!guest||strlen(guest)>=32||!host||strlen(host)>=1200)return -1;
     AcquireSRWLockExclusive(&registry);strcpy(mounts[slot].guest,guest);strcpy(mounts[slot].host,host);

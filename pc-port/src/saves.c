@@ -23,7 +23,7 @@ static int name_valid(const DirName *dir){if(!dir||!memchr(dir->name,0,32)||!dir
 static int root(int user,char *path,size_t size){
     if(user<0)return 0;char base[1200];snprintf(base,sizeof(base),"%s",runtime_save_root());CreateDirectoryA(base,NULL);
     snprintf(path,size,"%s\\%d",base,user);CreateDirectoryA(path,NULL);
-    snprintf(path,size,"%s\\%d\\CUSA00004",base,user);return CreateDirectoryA(path,NULL)||GetLastError()==ERROR_ALREADY_EXISTS;
+    snprintf(path,size,"%s\\%d\\%s",base,user,runtime_title_id());return CreateDirectoryA(path,NULL)||GetLastError()==ERROR_ALREADY_EXISTS;
 }
 static int32_t GUEST_ABI initialize(const void *p){(void)p;char path[1200];if(!root(1,path,sizeof(path)))return err(11);initialized=1;return 0;}
 static int32_t GUEST_ABI terminate(void){if(!initialized)return err(1);initialized=0;return 0;}
@@ -102,8 +102,11 @@ static int32_t GUEST_ABI save_icon(const Point *point,const Icon *icon){
     if(ok)ok=MoveFileExA(temporary,path,MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)!=0;
     ReleaseSRWLockExclusive(&lock);return ok?0:err(11);
 }
+// sceSaveDataTransferringMount (First Light): the saves another title passes on. None here: not found.
+static int32_t GUEST_ABI transferring_mount(const void *p,void *out){(void)p;(void)out;return err(8);}
 uintptr_t save_resolve(const char *identity){
     if(!strstr(identity,"#libSceSaveData#1#libSceSaveData#257"))return 0;const char *api=runtime_api_name(identity);
+    if(!strncmp(identity,"WAzWTZm1H+I#",12))return (uintptr_t)transferring_mount;
 #define API(n,f) if(!strcmp(api,n))return (uintptr_t)f
     API("sceSaveDataInitialize3",initialize);API("sceSaveDataTerminate",terminate);API("sceSaveDataMount2",mount_save);
     API("sceSaveDataUmount",umount_save);API("sceSaveDataSetParam",set_param);API("sceSaveDataDirNameSearch",search);

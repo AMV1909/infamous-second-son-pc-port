@@ -33,6 +33,9 @@ uintptr_t kernel_sync_resolve(const char *identity);
 uintptr_t http_resolve(const char *identity);
 const char *runtime_user_root(void);
 const char *runtime_save_root(void);
+// The game the launcher runs (ISS_TITLE_ID, ISS_GAME_NAME); inFAMOUS Second Son when unset.
+const char *runtime_title_id(void);
+const char *runtime_game_name(void);
 // The save data dialog of iss-gpu.dll (gpu/iss_dialog.h), when the DLL has it.
 int gpu_dialog_available(void);
 int gpu_dialog_open(const void *dialog);
@@ -56,6 +59,8 @@ uint64_t runtime_process_time_us(void);
 int gpu_start(uint32_t sdk_version,uint64_t image_base);
 uintptr_t gpu_resolve(const char *identity);
 int gpu_handle_fault(EXCEPTION_POINTERS *exception);
+// The stacks of all threads into the session's log folder (crash-threads.txt).
+void gpu_dump_threads(unsigned long tid);
 int gpu_readback(uint64_t address,uint64_t size);
 int gpu_invalidate(uint64_t address,uint64_t size);
 int gpu_feedback_identity_available(void);

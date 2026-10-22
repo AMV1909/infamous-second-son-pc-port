@@ -18,7 +18,7 @@ static int32_t GUEST_ABI create_context(int *out,int user,uint32_t label,uint64_
 static int32_t GUEST_ABI register_context(int c,int h,uint64_t options){
     if(options)return err(4);AcquireSRWLockExclusive(&lock);if(!valid(c,h)){ReleaseSRWLockExclusive(&lock);return err(9);}
     char root[1300];snprintf(root,sizeof(root),"%s\\trophies",runtime_user_root());CreateDirectoryA(root,NULL);
-    snprintf(contexts[c-1].file,sizeof(contexts[c-1].file),"%s\\CUSA00004-user%d.bin",root,contexts[c-1].user);
+    snprintf(contexts[c-1].file,sizeof(contexts[c-1].file),"%s\\%s-user%d.bin",root,runtime_title_id(),contexts[c-1].user);
     FILE *f=fopen(contexts[c-1].file,"rb");if(f){fread(contexts[c-1].flags,1,16,f);fclose(f);}contexts[c-1].registered=1;
     ReleaseSRWLockExclusive(&lock);return 0;
 }
