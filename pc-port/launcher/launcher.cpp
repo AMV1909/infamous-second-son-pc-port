@@ -757,6 +757,10 @@ std::wstring LaunchGame(HWND notify) {
     env[L"ISS_GPU_BLACKBOX"] = Widen(SettingValue("blackbox"));
     env[L"ISS_UNIFIED_MEMORY"] = Widen(UnifiedMemoryValue());
     env[L"ISS_LANGUAGE"] = Widen(SettingValue("language"));
+    // Started from Steam, its Fossilize layer records every pipeline the game creates (thousands:
+    // 300 MB in 30 s, ~100 ms per frame of pipeline creation and second-long stalls). The port
+    // keeps its own pipeline cache, so the layer is turned off for the game.
+    env[L"DISABLE_VK_LAYER_VALVE_steam_fossilize_1"] = L"1";
     if (const std::string map = PadMapString(); !map.empty()) env[L"ISS_PAD_MAP"] = Widen(map);
     {
         std::string labels;
@@ -2212,6 +2216,34 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     const bool first_run = !fs::exists(ConfigPath());
     LoadConfig();
     if (first_run && SmallScreen()) g_settings[0].index = 1; // the game fullscreen on a Deck
+    // launcher.exe --play: the game at once with the saved settings (a Steam launch option). The
+    // launcher shows no window and waits for the game, then finishes its session; without a game
+    // folder or prepared files it opens as usual and presses PLAY itself.
+    bool play_at_start = false;
+    {
+        int argc = 0;
+        wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+        play_at_start = argv && argc == 2 && !wcscmp(argv[1], L"--play");
+        if (argv) LocalFree(argv);
+    }
+    if (play_at_start && CheckGameDir(g_game_dir).empty() && PreparedReady()) {
+        std::error_code ec;
+        g_session.cache_work = PrepareCache(fs::is_regular_file(ShaderLibrary() / "manifest.json", ec));
+        const std::wstring why = LaunchGame(nullptr);
+        DWORD code = 0;
+        if (why.empty()) {
+            WaitForSingleObject(g_game, INFINITE);
+            GetExitCodeProcess(g_game, &code);
+            CloseHandle(g_game);
+            g_game = nullptr;
+            FinishCache(g_session);
+        } else {
+            MessageBoxW(nullptr, why.c_str(), L"inFAMOUS Second Son", MB_OK | MB_ICONERROR);
+        }
+        GdiplusShutdown(gdi_token);
+        CoUninitialize();
+        return why.empty() ? int(code) : 1;
+    }
     LoadFonts();
     LoadXInput();
     if (CheckGameDir(g_game_dir).empty()) {
@@ -2250,6 +2282,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     ShowWindow(g_hwnd, show);
     UpdateWindow(g_hwnd);
     SetTimer(g_hwnd, 1, 16, nullptr); // controller polling
+    if (play_at_start && CheckGameDir(g_game_dir).empty()) Activate(HotPlay);
 
     MSG m;
     while (GetMessageW(&m, nullptr, 0, 0) > 0) {
