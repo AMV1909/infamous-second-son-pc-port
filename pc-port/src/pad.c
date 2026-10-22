@@ -27,7 +27,8 @@ static uint8_t next_touch=1,contact_id[2];
 static uint64_t touch_start;
 static SDL_Gamepad *sdl_pad;
 static uint64_t scan_tick,sensor_tick;
-static float quaternion[4]={0,0,0,1};
+static float quaternion[4]={0,0,0,1},accel_gain=1,gravity[3];
+static int pad_in_use,pad_touching;
 static int sdl_ready;
 static int swipe_direction=-1,swipe_keys[4];
 static uint64_t swipe_started;
@@ -45,8 +46,13 @@ static void scan_gamepads(void){
     memset(was_touch,0,sizeof(was_touch));memset(quaternion,0,sizeof(quaternion));quaternion[3]=1;sensor_tick=0;
     bool gyro=SDL_SetGamepadSensorEnabled(next,SDL_SENSOR_GYRO,true);
     bool accel=SDL_SetGamepadSensorEnabled(next,SDL_SENSOR_ACCEL,true);
-    fprintf(stderr,"PAD selected name=%s joystick=%s type=%d vendor=%04x product=%04x touchpads=%d gyro=%d accel=%d\n",
-        SDL_GetGamepadName(next),SDL_GetJoystickName(SDL_GetGamepadJoystick(next)),(int)SDL_GetGamepadType(next),SDL_GetGamepadVendor(next),SDL_GetGamepadProduct(next),SDL_GetNumGamepadTouchpads(next),gyro,accel);
+    // Valve's controllers (Steam Controller, Steam Deck) measure +-2 G, a DualShock 4 +-4 G (see
+    // pad_accel_gain). ISS_PAD_ACCEL_GAIN sets the gain for any controller (1: as measured).
+    const char *g=getenv("ISS_PAD_ACCEL_GAIN");accel_gain=g?(float)atof(g):SDL_GetGamepadVendor(next)==0x28de?2.f:1.f;
+    if(!(accel_gain>0))accel_gain=1;
+    fprintf(stderr,"PAD selected name=%s joystick=%s type=%d vendor=%04x product=%04x touchpads=%d gyro=%d (%.0f Hz) accel=%d (%.0f Hz) accel_gain=%.1f, %d gamepads\n",
+        SDL_GetGamepadName(next),SDL_GetJoystickName(SDL_GetGamepadJoystick(next)),(int)SDL_GetGamepadType(next),SDL_GetGamepadVendor(next),SDL_GetGamepadProduct(next),SDL_GetNumGamepadTouchpads(next),
+        gyro,SDL_GetGamepadSensorDataRate(next,SDL_SENSOR_GYRO),accel,SDL_GetGamepadSensorDataRate(next,SDL_SENSOR_ACCEL),accel_gain,count);
 }
 static uint16_t touch_coord(float v,unsigned maximum){if(!isfinite(v)||v<0)v=0;if(v>1)v=1;return (uint16_t)(v*(float)maximum);}
 // The controller layout (launcher CONTROLLERS, ISS_PAD_MAP="a=cross,view=touch_left,..."): what
@@ -103,6 +109,14 @@ static void apply_map(const uint8_t map[SRC_COUNT],const int pressed[SRC_COUNT],
         if(t==T_TOUCH_RIGHT){contacts[1]=1;xy[1][0]=1440;xy[1][1]=471;}
     }
 }
+// The spray can is shaken harder than 2 G, which a DualShock 4 (+-4 G) measures and Valve's
+// controllers (+-2 G) clip, so the game never sees the shake from them. The motion beyond gravity
+// (the accelerometer's average over 0.3 s) is scaled by the gain, within the DualShock 4's range;
+// the controller held still reads as before. dt 0 starts the average.
+void pad_accel_gain(float accel[3],float gravity[3],float gain,float dt){
+    const float k=dt>0&&dt<.3f?dt/.3f:1;
+    for(int i=0;i<3;++i){gravity[i]+=(accel[i]-gravity[i])*k;const float v=gravity[i]+gain*(accel[i]-gravity[i]);accel[i]=v>4?4:v<-4?-4:v;}
+}
 static int read_sdl(PadData *out,int contacts[2],uint16_t xy[2][2]){
     if(!sdl_ready)return 0;SDL_UpdateGamepads();scan_gamepads();if(!sdl_pad)return 0;
     static const SDL_GamepadButton buttons[SRC_COUNT]={SDL_GAMEPAD_BUTTON_SOUTH,SDL_GAMEPAD_BUTTON_EAST,SDL_GAMEPAD_BUTTON_WEST,
@@ -121,6 +135,10 @@ static int read_sdl(PadData *out,int contacts[2],uint16_t xy[2][2]){
     const SDL_GamepadType type=SDL_GetGamepadType(sdl_pad);
     apply_map(type==SDL_GAMEPAD_TYPE_PS4||type==SDL_GAMEPAD_TYPE_PS5?playstation_map:pad_map,pressed,lt,rt,out,contacts,xy);
     if(SDL_GetGamepadButton(sdl_pad,SDL_GAMEPAD_BUTTON_TOUCHPAD))out->buttons|=0x100000;
+    // A finger on any touchpad (the Steam Controller's two trackpads too) is the controller in use.
+    pad_touching=0;
+    for(int t=0;t<SDL_GetNumGamepadTouchpads(sdl_pad);++t)for(int i=0;i<SDL_GetNumGamepadTouchpadFingers(sdl_pad,t);++i){bool down=false;
+        if(SDL_GetGamepadTouchpadFinger(sdl_pad,t,i,&down,NULL,NULL,NULL)&&down)pad_touching=1;}
     if(SDL_GetNumGamepadTouchpads(sdl_pad)>0){int fingers=SDL_GetNumGamepadTouchpadFingers(sdl_pad,0);
         for(int i=0;i<2&&i<fingers;++i){bool down=false;float x=0,y=0,pressure=0;
             if(SDL_GetGamepadTouchpadFinger(sdl_pad,0,i,&down,&x,&y,&pressure)&&down){contacts[i]=1;xy[i][0]=touch_coord(x,1919);xy[i][1]=touch_coord(y,941);}}}
@@ -128,6 +146,7 @@ static int read_sdl(PadData *out,int contacts[2],uint16_t xy[2][2]){
     SDL_GetGamepadSensorData(sdl_pad,SDL_SENSOR_GYRO,gyro,3);SDL_GetGamepadSensorData(sdl_pad,SDL_SENSOR_ACCEL,accel,3);
     for(int i=0;i<3;++i){out->angular[i]=isfinite(gyro[i])?gyro[i]:0;out->acceleration[i]=isfinite(accel[i])?accel[i]/SDL_STANDARD_GRAVITY:0;}
     uint64_t now=SDL_GetTicksNS();float dt=sensor_tick?(float)((double)(now-sensor_tick)/1e9):0;sensor_tick=now;
+    if(accel_gain!=1)pad_accel_gain(out->acceleration,gravity,accel_gain,dt<0.1f?dt:0);
     // Same q * angular-velocity convention as shadPS4 input/controller.cpp (GPL-2.0-or-later).
     if(dt>0&&dt<0.1f){float x=quaternion[0],y=quaternion[1],z=quaternion[2],w=quaternion[3];
         float gx=out->angular[0]*dt*.5f,gy=out->angular[1]*dt*.5f,gz=out->angular[2]*dt*.5f;
@@ -173,11 +192,36 @@ void pad_spray_step(float q[4],float dx,float dy,float dt,int shake,double secon
     quat_rotate(conj,rate,angular);quat_rotate(conj,up,accel);
     if(shake){const float phase=(float)(6.283185307*6.0*seconds);accel[0]+=1.6f*sinf(phase);angular[2]+=4.0f*cosf(phase);}
 }
-// The game window's procedure, wrapped once: in spray mode the cursor is hidden over the window.
+// The game window's procedure, wrapped once (the game's SDL window, not the save dialog): the
+// cursor is hidden over the window in spray mode, and while the controller is played (not the
+// keyboard and mouse) unless the mouse is the touchpad (F6).
 static WNDPROC game_proc;
+static int cursor_hidden(void){return mouse_mode==2||(mouse_mode==0&&pad_in_use);}
 static LRESULT CALLBACK game_window_proc(HWND window,UINT message,WPARAM wp,LPARAM lp){
-    if(message==WM_SETCURSOR&&mouse_mode==2&&LOWORD(lp)==HTCLIENT){SetCursor(NULL);return TRUE;}
+    if(message==WM_SETCURSOR&&cursor_hidden()&&LOWORD(lp)==HTCLIENT){SetCursor(NULL);return TRUE;}
     return CallWindowProcW(game_proc,window,message,wp,lp);
+}
+static void hook_game_window(HWND window){
+    wchar_t name[16];
+    if(game_proc||!window||!GetClassNameW(window,name,16)||wcscmp(name,L"SDL_app"))return;
+    game_proc=(WNDPROC)SetWindowLongPtrW(window,GWLP_WNDPROC,(LONG_PTR)game_window_proc);
+}
+// The cursor is hidden while the controller is played, and shown again once the keyboard or the
+// mouse is used: input Windows counts (GetLastInputInfo) while the controller has been still
+// for half a second. Steam's desktop layout turns the Steam Controller's trackpad and buttons into
+// mouse and key input, which comes with the controller's own activity.
+static int played_with_pad(int connected,int active){
+    static int keyboard_mouse;static DWORD last_input;static ULONGLONG pad_active;
+    const ULONGLONG now=GetTickCount64();
+    if(active){pad_active=now;keyboard_mouse=0;}
+    LASTINPUTINFO info={sizeof(info),0};
+    if(GetLastInputInfo(&info)&&info.dwTime!=last_input){if(last_input&&now-pad_active>500)keyboard_mouse=1;last_input=info.dwTime;}
+    return connected&&!keyboard_mouse;
+}
+// The cursor changes when it next moves; this applies the change while it rests on the window.
+static void refresh_cursor(HWND window){
+    POINT cursor;
+    if(window&&GetCursorPos(&cursor)&&WindowFromPoint(cursor)==window)PostMessageW(window,WM_SETCURSOR,(WPARAM)window,MAKELPARAM(HTCLIENT,WM_MOUSEMOVE));
 }
 static void set_mouse_mode(int mode,HWND window){
     mouse_mode=mode;mouse_anchored=mouse_touch=0;spray_tick=0;memcpy(spray,spray_pose,sizeof(spray));
@@ -186,8 +230,7 @@ static void set_mouse_mode(int mode,HWND window){
     pad_panel_set_mode(mode);
     if(mode==2){float dx,dy;pad_panel_raw(&dx,&dy);} // starts Raw Input, drops what was counted before
     if(!window)return;
-    if(!game_proc)game_proc=(WNDPROC)SetWindowLongPtrW(window,GWLP_WNDPROC,(LONG_PTR)game_window_proc);
-    PostMessageW(window,WM_SETCURSOR,(WPARAM)window,MAKELPARAM(HTCLIENT,WM_MOUSEMOVE));
+    hook_game_window(window);PostMessageW(window,WM_SETCURSOR,(WPARAM)window,MAKELPARAM(HTCLIENT,WM_MOUSEMOVE));
     if(!base_title[0]&&!InternalGetWindowText(window,base_title,256))return;
     wchar_t title[320];
     swprintf(title,320,L"%ls%ls",base_title,mode==1?L"  [touchpad: mouse]":mode==2?L"  [spray: mouse]":L"");
@@ -215,7 +258,8 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
     memset(out,0,sizeof(*out));out->lx=out->ly=out->rx=out->ry=128;out->orientation[3]=1;out->acceleration[1]=1;
     out->connected=out->connected_count=1;out->timestamp=runtime_process_time_us();
     XINPUT_STATE state;int contacts[2]={0,0};uint16_t xy[2][2]={{480,471},{1440,471}};
-    if(!read_sdl(out,contacts,xy)&&XInputGetState(0,&state)==ERROR_SUCCESS){XINPUT_GAMEPAD *g=&state.Gamepad;
+    const int sdl=read_sdl(out,contacts,xy),xinput=!sdl&&XInputGetState(0,&state)==ERROR_SUCCESS;
+    if(xinput){XINPUT_GAMEPAD *g=&state.Gamepad;
         out->lx=axis(g->sThumbLX);out->ly=(uint8_t)(255-axis(g->sThumbLY));out->rx=axis(g->sThumbRX);out->ry=(uint8_t)(255-axis(g->sThumbRY));
         const uint8_t lt=g->bLeftTrigger,rt=g->bRightTrigger;
         static const WORD xb[SRC_COUNT]={XINPUT_GAMEPAD_A,XINPUT_GAMEPAD_B,XINPUT_GAMEPAD_X,XINPUT_GAMEPAD_Y,XINPUT_GAMEPAD_LEFT_SHOULDER,
@@ -225,6 +269,10 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
         for(int i=0;i<SRC_COUNT;++i)pressed[i]=i==SRC_LT?lt>30:i==SRC_RT?rt>30:xb[i]&&(g->wButtons&xb[i]);
         apply_map(pad_map,pressed,lt,rt,out,contacts,xy);
     }
+    // The controller's own activity (the keyboard is read below): a button, a trigger, a stick off
+    // its centre or a finger on a touchpad.
+    const int active=out->buttons||out->l2>30||out->r2>30||(sdl&&pad_touching)||abs(out->lx-128)>24||abs(out->ly-128)>24||
+        abs(out->rx-128)>24||abs(out->ry-128)>24;
     if(pad_swipe>=0){swipe_direction=pad_swipe;swipe_started=out->timestamp;was_touch[0]=0;pad_swipe=-1;}
     DWORD foreground=0;GetWindowThreadProcessId(GetForegroundWindow(),&foreground);
     const int focused=foreground==GetCurrentProcessId();
@@ -245,6 +293,7 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
         for(int i=0;i<4;++i){int down=key(touch_keys[K_SWIPE_UP+i]);if(down&&!swipe_keys[i]){swipe_direction=i;swipe_started=out->timestamp;was_touch[0]=0;}swipe_keys[i]=down;}
         HWND window=GetForegroundWindow();
         if(window!=pad_panel_window())game_window=window;else window=game_window;
+        hook_game_window(window);
         const int f6=key(touch_keys[K_MOUSE]),f7=key(touch_keys[K_SPRAY]),f5=key(touch_keys[K_PANEL]);
         if(f6&&!mode_keys[0])set_mouse_mode(mouse_mode==1?0:1,window);
         if(f7&&!mode_keys[1])set_mouse_mode(mouse_mode==2?0:2,window);
@@ -277,6 +326,8 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
             }
         }
     }else{memset(swipe_keys,0,sizeof(swipe_keys));swipe_direction=-1;mouse_anchored=mouse_touch=0;}
+    if(played_with_pad(sdl||xinput,active)!=pad_in_use){pad_in_use=!pad_in_use;refresh_cursor(game_window);
+        fprintf(stderr,"PAD input from the %s\n",pad_in_use?"controller":"keyboard and mouse");}
     // The touchpad window (F5): a finger where it is pressed and dragged (Shift: two, mirrored),
     // the right button clicks; its buttons press the sides, swipe and switch the modes.
     PadPanel panel;pad_panel_read(&panel);

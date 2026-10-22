@@ -22,6 +22,16 @@ static void spray_test(void){
     pad_spray_step(q,0,10,.01f,0,0,w,a);CHECK(fabsf(w[1]-3)<.01f&&fabsf(w[0])<.01f&&a[0]<1);
     pad_spray_step(q,0,0,.01f,1,1.0/24,w,a);CHECK(a[0]>1.5f);
 }
+void pad_accel_gain(float accel[3],float gravity[3],float gain,float dt);
+// A Steam Controller (+-2 G) held on its side and shaken at 5 Hz clips at 2 G; with the gain the
+// shake reaches past it as on a DualShock 4, and held still it reads gravity as measured.
+static void accel_gain_test(void){
+    float gravity[3],a[3]={1,0,0},peak=0,low=0;pad_accel_gain(a,gravity,2,0);CHECK(fabsf(a[0]-1)<.001f);
+    for(int i=1;i<=200;++i){const float v=1+3*sinf(6.2831853f*5*i/250.f);a[0]=v>2?2:v<-2?-2:v;a[1]=a[2]=0;
+        pad_accel_gain(a,gravity,2,1/250.f);if(i>100){if(a[0]>peak)peak=a[0];if(a[0]<low)low=a[0];}CHECK(a[0]<=4&&a[0]>=-4);}
+    CHECK(peak>3&&low<-3);
+    for(int i=0;i<500;++i){a[0]=1;a[1]=a[2]=0;pad_accel_gain(a,gravity,2,1/250.f);}CHECK(fabsf(a[0]-1)<.01f&&fabsf(a[1])<.001f);
+}
 int main(int argc,char **argv){
     int monitor=argc>1&&!strcmp(argv[1],"--monitor");
     // Keep the user's physical/PhonePad devices out of this synthetic contract test.
@@ -82,7 +92,7 @@ int main(int argc,char **argv){
     CHECK(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_GUIDE,true));CHECK(read(1,data)==0);memcpy(&buttons,data,4);
     CHECK(data[52]==0&&(buttons&8)&&!(buttons&0x10000));
     SDL_CloseJoystick(joystick);CHECK(SDL_DetachVirtualJoystick(id));
-    spray_test();
-    puts("PASS: SDL DS4 buttons, axes, two independent touch contacts, release, sensors, quaternion, disconnect, PlayStation and Xbox layouts and the F7 spray can.");
+    spray_test();accel_gain_test();
+    puts("PASS: SDL DS4 buttons, axes, two independent touch contacts, release, sensors, quaternion, disconnect, PlayStation and Xbox layouts, the F7 spray can and the accelerometer gain.");
     return 0;
 }
