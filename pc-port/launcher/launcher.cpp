@@ -1041,14 +1041,53 @@ void ApplyExeIcon() {
 // ---------------------------------------------------------------------------------------------
 // The game: Second Son or First Light, each with its own user folder
 // ---------------------------------------------------------------------------------------------
-const Game* OtherGame() { return g_game_info == &kGames[0] ? &kGames[1] : &kGames[0]; }
+// A game's own user folder (user\ or user\first-light\).
+fs::path GameUser(const Game* game) { return *game->user_dir ? g_user_base / game->user_dir : g_user_base; }
 
-std::wstring SwitchLabel() { return L"SWITCH TO " + std::wstring(OtherGame()->subtitle); }
+// The game folder a game's launcher.ini names (the current game's is g_game_dir), else empty.
+std::wstring GameDirOf(const Game* game) {
+    if (game == g_game_info) return g_game_dir;
+    std::ifstream f(GameUser(game) / "launcher.ini");
+    std::string line;
+    while (std::getline(f, line))
+        if (line.rfind("game_dir=", 0) == 0) return Widen(line.substr(9));
+    return {};
+}
 
 const Game* FindGame(const std::string& key) {
     for (const auto& g : kGames)
         if (key == g.key) return &g;
     return nullptr;
+}
+
+// The picker's card art: each game's sce_sys\pic0.png, scaled once to twice the card size.
+std::unique_ptr<Bitmap> g_card_art[std::size(kGames)];
+std::wstring g_card_source[std::size(kGames)];
+Bitmap* CardArt(int i) {
+    const std::wstring dir = GameDirOf(&kGames[i]);
+    if (dir.empty()) return nullptr;
+    if (g_card_source[i] != dir) {
+        g_card_source[i] = dir;
+        g_card_art[i].reset();
+        Bitmap pic((fs::path(dir) / "sce_sys" / "pic0.png").c_str());
+        if (pic.GetLastStatus() == Ok) {
+            auto art = std::make_unique<Bitmap>(760, 428, PixelFormat32bppPARGB);
+            Graphics g(art.get());
+            g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
+            g.DrawImage(&pic, 0, 0, 760, 428);
+            g_card_art[i] = std::move(art);
+        }
+    }
+    return g_card_art[i].get();
+}
+
+// The game's folder is set and holds that game (an edition of it, with its eboot.bin).
+bool CheckGameFolderOf(const Game* game) {
+    const std::wstring dir = GameDirOf(game);
+    std::error_code ec;
+    if (dir.empty() || !fs::is_regular_file(fs::path(dir) / "eboot.bin", ec)) return false;
+    const Edition* edition = GameEdition(dir);
+    return edition && edition->game == game;
 }
 
 std::vector<int> g_default_settings; // the choices before any launcher.ini was read
@@ -1057,7 +1096,7 @@ std::vector<int> g_default_settings; // the choices before any launcher.ini was 
 // from the current settings and controller layout, with no game folder.
 void SelectGame(const Game* game) {
     g_game_info = game;
-    g_user = *game->user_dir ? g_user_base / game->user_dir : g_user_base;
+    g_user = GameUser(game);
     std::error_code ec;
     fs::create_directories(g_user_base, ec);
     std::ofstream(g_user_base / "game.txt", std::ios::trunc) << game->key << "\n";
@@ -1080,8 +1119,9 @@ void SelectGame(const Game* game) {
 // 1280x800 the launcher opens borderless fullscreen). Mouse, keyboard and controllers (XInput:
 // Steam Input on the Deck, Xbox pads, PlayStation pads through Steam) move a focus between items.
 // ---------------------------------------------------------------------------------------------
-enum class Screen { Main, Settings, Controllers, Setup, Running, Preparing };
+enum class Screen { Main, Settings, Controllers, Setup, Running, Preparing, Games };
 Screen g_screen = Screen::Main;
+Screen g_games_from = Screen::Main; // the page CHANGE GAME was chosen on
 int g_tab = TabDisplay;
 std::wstring g_status;
 float g_scale = 1.0f;     // canvas units -> pixels
@@ -1093,8 +1133,8 @@ std::unique_ptr<FontFamily> g_oswald;
 
 enum Hot {
     HotNone, HotClose, HotMinimize, HotPlay, HotSettings, HotQuit, HotBack, HotBrowse, HotBrowseDlc,
-    HotContinue, HotControllers, HotMapReset, HotMapDone, HotHelp, HotSwitchGame, HotTab0 = 20, HotSetting0 = 100, HotAction0 = 200,
-    HotMap0 = 300
+    HotContinue, HotControllers, HotMapReset, HotMapDone, HotHelp, HotSwitchGame, HotGamesBack, HotTab0 = 20, HotSetting0 = 100, HotAction0 = 200,
+    HotMap0 = 300, HotGame0 = 400
 };
 struct Spot {
     RectF rect;
@@ -1174,6 +1214,10 @@ std::vector<int> FocusOrder() {
             for (int a = 0; a < ActCount; ++a) order.push_back(HotAction0 + a);
         order.push_back(HotBack);
         order.push_back(HotHelp);
+        break;
+    case Screen::Games:
+        for (int i = 0; i < int(std::size(kGames)); ++i) order.push_back(HotGame0 + i);
+        order.push_back(HotGamesBack);
         break;
     case Screen::Running: case Screen::Preparing: break;
     }
@@ -1315,6 +1359,7 @@ void BuildBackdrop(int width, int height, float bar) {
 // Items the sliding bar can sit behind (rows and text menu entries).
 bool BarItem(int id) {
     return id == HotSettings || id == HotQuit || id == HotBack || id == HotControllers || id == HotSwitchGame ||
+           id == HotGamesBack ||
            id == HotMapReset || id == HotMapDone || (id >= HotMap0 && id < HotMap0 + kPadSourceCount) ||
            (id >= HotSetting0 && id < HotSetting0 + int(g_settings.size())) ||
            (id >= HotAction0 && id < HotAction0 + ActCount);
@@ -1394,9 +1439,10 @@ void Paint(HDC hdc, int width, int height) {
 
     // Logo (smaller on the settings page).
     const float left = S(78);
-    const bool compact = g_screen == Screen::Settings || g_screen == Screen::Setup || g_screen == Screen::Controllers;
+    const bool compact = g_screen == Screen::Settings || g_screen == Screen::Setup || g_screen == Screen::Controllers ||
+                         g_screen == Screen::Games;
     // The controller page has the most rows: the smallest logo.
-    const bool tiny = g_screen == Screen::Controllers;
+    const bool tiny = g_screen == Screen::Controllers || g_screen == Screen::Games;
     float y = bar + S(tiny ? 16 : compact ? 28 : 46);
     {
         const float lw = S(tiny ? 130 : compact ? 210 : 340);
@@ -1454,7 +1500,7 @@ void Paint(HDC hdc, int width, int height) {
             g_spots.push_back({play, HotPlay});
             menu_item(L"SETTINGS", HotSettings, y + S(70));
             menu_item(L"CONTROLS", HotControllers, y + S(120));
-            menu_item(SwitchLabel().c_str(), HotSwitchGame, y + S(170));
+            menu_item(L"CHANGE GAME", HotSwitchGame, y + S(170));
             menu_item(L"QUIT", HotQuit, y + S(220));
         }
     } else if (g_screen == Screen::Settings) {
@@ -1573,6 +1619,47 @@ void Paint(HDC hdc, int width, int height) {
         };
         text_button(L"RESTORE RECOMMENDED", HotMapReset, left, S(300));
         text_button(L"BACK", HotMapDone, left + S(320), S(140));
+    } else if (g_screen == Screen::Games) {
+        // Two cards: each game's key art (its sce_sys\pic0.png), its name, and whether it is ready.
+        Font head(oswald, S(18), FontStyleRegular, UnitPixel);
+        SpacedText(g, L"CHOOSE GAME", head, text_brush, left, y, S(2));
+        const float cw = S(380), ch = S(214), gap = S(32), cy = y + S(40);
+        Font title(oswald, S(20), FontStyleRegular, UnitPixel);
+        for (int i = 0; i < int(std::size(kGames)); ++i) {
+            const Game& game = kGames[i];
+            const int id = HotGame0 + i;
+            const float t = lit(id), grow = S(6) * t;
+            const RectF card(left + i * (cw + gap) - grow / 2, cy - grow / 2, cw + grow, ch + grow);
+            if (Bitmap* art = CardArt(i)) {
+                g.DrawImage(art, card);
+            } else {
+                SolidBrush empty(Color(255, 24, 24, 24));
+                g.FillRectangle(&empty, card);
+                Font small_title(oswald, S(18), FontStyleRegular, UnitPixel);
+                Font big(oswald, S(40), FontStyleBold, UnitPixel);
+                SpacedText(g, L"inFAMOUS", small_title, text_brush, card.X + S(24), card.Y + S(70), S(3));
+                g.DrawString(game.subtitle, -1, &big, PointF(card.X + S(22), card.Y + S(90)), &yellow);
+            }
+            if (t < 1.0f) {
+                SolidBrush dim(Color(BYTE(110 * (1.0f - t)), 0, 0, 0));
+                g.FillRectangle(&dim, card);
+            }
+            Pen frame(t > 0.01f ? Mix(Color(255, 70, 70, 70), kYellow, t) : Color(255, 70, 70, 70), S(1.0f + 2.0f * t));
+            g.DrawRectangle(&frame, card);
+            if (&game == g_game_info) {
+                const wchar_t* badge_text = L"CURRENT";
+                const float bw = SpacedWidth(g, badge_text, hint, S(1.5f)) + S(14);
+                g.FillRectangle(&yellow, RectF(card.X + S(10), card.Y + S(10), bw, S(20)));
+                SpacedText(g, badge_text, hint, black, card.X + S(17), card.Y + S(11), S(1.5f));
+            }
+            SolidBrush name_brush(Mix(kText, kYellow, t));
+            g.DrawString(game.name, -1, &title, PointF(left + i * (cw + gap), cy + ch + S(10)), &name_brush);
+            const bool ready = CheckGameFolderOf(&game);
+            g.DrawString(ready ? L"Ready to play" : L"Game folder not set: choose it next", -1, &hint,
+                         PointF(left + i * (cw + gap), cy + ch + S(40)), &dim_brush);
+            g_spots.push_back({RectF(left + i * (cw + gap), cy, cw, ch + S(60)), id});
+        }
+        menu_item(L"BACK", HotGamesBack, cy + ch + S(76));
     } else if (g_screen == Screen::Setup) {
         Font head(oswald, S(18), FontStyleRegular, UnitPixel);
         const bool has_game = CheckGameDir(g_game_dir).empty();
@@ -1634,10 +1721,10 @@ void Paint(HDC hdc, int width, int height) {
                              PointF(left + S(184), y2 + S(40)), &dim_brush);
             }
             button(L"CONTINUE", HotContinue, RectF(left, y2 + S(124), S(250), S(44)), true);
-            menu_item(SwitchLabel().c_str(), HotSwitchGame, y2 + S(178));
+            menu_item(L"CHANGE GAME", HotSwitchGame, y2 + S(178));
             menu_item(L"QUIT", HotQuit, y2 + S(228));
         } else {
-            menu_item(SwitchLabel().c_str(), HotSwitchGame, y + S(84));
+            menu_item(L"CHANGE GAME", HotSwitchGame, y + S(84));
             menu_item(L"QUIT", HotQuit, y + S(134));
         }
     }
@@ -1706,8 +1793,10 @@ void Paint(HDC hdc, int width, int height) {
     if (g_screen != Screen::Running && g_screen != Screen::Preparing) {
         const wchar_t* keys = g_pad_used
             ? (g_screen == Screen::Settings || g_screen == Screen::Controllers ? L"Ⓐ Change   Ⓑ Back   ◀ ▶ Value"
+               : g_screen == Screen::Games ? L"Ⓐ Select   Ⓑ Back   ◀ ▶ Game"
                                             : L"Ⓐ Select   Ⓑ Back   START Play")
             : (g_screen == Screen::Settings || g_screen == Screen::Controllers ? L"Enter  Change     Esc  Back     ← →  Value"
+               : g_screen == Screen::Games ? L"Enter  Select     Esc  Back     ← →  Game"
                                             : L"Enter  Select     Esc  Back");
         RectF kbox;
         g.MeasureString(keys, -1, &hint, PointF(0, 0), &kbox);
@@ -1888,8 +1977,25 @@ void Activate(int id) {
         SetStatus(L"Game running. The launcher comes back when it closes.");
         ShowWindow(g_hwnd, SW_MINIMIZE);
     } else if (id == HotSwitchGame) {
+        // CHANGE GAME: the picker, back to this page with BACK (or Esc / B).
+        g_games_from = g_screen;
+        Restart();
+        g_screen = Screen::Games;
+        g_focus = HotGame0 + int(g_game_info - kGames);
+        SetStatus(L"");
+    } else if (id == HotGamesBack) {
+        Restart();
+        g_screen = g_games_from;
+        g_focus = HotSwitchGame;
+        SetStatus(L"");
+    } else if (id >= HotGame0 && id < HotGame0 + int(std::size(kGames))) {
+        const Game* game = &kGames[id - HotGame0];
+        if (game == g_game_info) {
+            Activate(HotGamesBack);
+            return;
+        }
         SaveConfig();
-        SelectGame(OtherGame());
+        SelectGame(game);
         LoadArt();
         g_backdrop.reset();
         ApplyIcon();
@@ -1981,6 +2087,8 @@ void Navigate(Nav nav) {
     const size_t at = it == order.end() ? 0 : size_t(it - order.begin());
     const bool on_setting = g_focus >= HotSetting0 && g_focus < HotSetting0 + int(g_settings.size());
     const bool on_map = g_focus >= HotMap0 && g_focus < HotMap0 + kPadSourceCount;
+    const bool on_game = g_focus >= HotGame0 && g_focus < HotGame0 + int(std::size(kGames));
+    const int games = int(std::size(kGames));
     switch (nav) {
     case Nav::Up:
         if (!order.empty()) g_focus = order[(at + order.size() - 1) % order.size()];
@@ -1991,15 +2099,18 @@ void Navigate(Nav nav) {
     case Nav::Left:
         if (on_setting) Cycle(g_focus, -1);
         if (on_map) CycleMap(g_focus, -1);
+        if (on_game) g_focus = HotGame0 + (g_focus - HotGame0 + games - 1) % games;
         break;
     case Nav::Right:
         if (on_setting) Cycle(g_focus, +1);
         if (on_map) CycleMap(g_focus, +1);
+        if (on_game) g_focus = HotGame0 + (g_focus - HotGame0 + 1) % games;
         break;
     case Nav::Accept: Activate(g_focus); return;
     case Nav::Back:
         if (g_screen == Screen::Settings) Activate(HotBack);
         if (g_screen == Screen::Controllers) Activate(HotMapDone);
+        if (g_screen == Screen::Games) Activate(HotGamesBack);
         return;
     case Nav::Play:
         if (g_screen == Screen::Main) Activate(HotPlay);
