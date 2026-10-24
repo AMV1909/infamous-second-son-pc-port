@@ -116,7 +116,7 @@ std::vector<Setting> g_settings = {
     // Its hint and choices are those of the game folder's edition (kEditions, ApplyEdition).
     {"language", L"Language", L"", {}, TabGame},
     // src/pad.c, controllers without a gyro or a touchpad (ISS_PAD_STICK_SPRAY, ISS_PAD_STICK_SWIPE).
-    {"stick_spray", L"Spray can on the right stick", L"No gyro: L3+R3 holds it, the stick aims, LB shakes, RB recenters.",
+    {"stick_spray", L"Spray can on the right stick", L"No gyro: L3+R3 holds it (the mouse too), stick aims, A shakes, RB recenters.",
      {{L"On", "1"}, {L"Off", "0"}}, TabGame},
     {"stick_swipe", L"Touchpad swipes on the right stick", L"Hold a touchpad button (View) and push the stick to swipe.",
      {{L"On", "1"}, {L"Off", "0"}}, TabGame},
@@ -1787,7 +1787,7 @@ void Paint(HDC hdc, int width, int height) {
                 L"shake it, hold the left button to spray. Shift: fine aim. Middle button: recenter. F7 again "
                 L"ends it.\n\n"
                 L"Keyboard: Space / Backspace press the left / right side of the touchpad, F8 both, 1-4 swipe.\n\n"
-                L"Controller without a gyro: L3+R3 holds it as the spray can (right stick aims, LB shakes, RB "
+                L"Controller without a gyro: L3+R3 holds it as the spray can with F7 (right stick aims, A shakes, RB "
                 L"recenters, R2 sprays). Hold View and push the right stick to swipe the touchpad.",
                 -1, &hint, RectF(box.X + S(16), box.Y + S(36), box.Width - S(32), box.Height - S(44)), nullptr,
                 &text_brush);

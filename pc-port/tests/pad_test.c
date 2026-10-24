@@ -102,8 +102,8 @@ int main(int argc,char **argv){
     CHECK(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_BACK,false));CHECK(read(1,data)==0);
     CHECK(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_BACK,true));CHECK(read(1,data)==0);CHECK(data[52]==1);
     CHECK(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_BACK,false));
-    // L3 + R3 (no gyro): the spray can on the right stick, held on its side; the presses and the
-    // stick stay with the can, LB shakes it. L3 + R3 again ends it.
+    // L3 + R3 (no gyro): the spray can on the right stick, held on its side, with the mouse's spray
+    // mode; the presses and the stick stay with the can, A (cross) shakes it. L3 + R3 again ends it.
     CHECK(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_LEFT_STICK,true));
     CHECK(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_RIGHT_STICK,true));CHECK(read(1,data)==0);memcpy(&buttons,data,4);
     CHECK(!(buttons&6)&&fabsf(scalar(data,28)-1)<.01f);const float side=scalar(data,20);
@@ -112,10 +112,10 @@ int main(int argc,char **argv){
     CHECK(SDL_SetJoystickVirtualAxis(joystick,SDL_GAMEPAD_AXIS_RIGHTX,32767));CHECK(read(1,data)==0);
     SDL_Delay(50);CHECK(read(1,data)==0);CHECK(data[6]==128&&scalar(data,40)<-.5f&&scalar(data,20)!=side);
     CHECK(SDL_SetJoystickVirtualAxis(joystick,SDL_GAMEPAD_AXIS_RIGHTX,0));
-    CHECK(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_LEFT_SHOULDER,true));
-    float peak=0;for(int i=0;i<12;++i){SDL_Delay(8);CHECK(read(1,data)==0);memcpy(&buttons,data,4);CHECK(!(buttons&0x400));
+    CHECK(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_SOUTH,true));
+    float peak=0;for(int i=0;i<12;++i){SDL_Delay(8);CHECK(read(1,data)==0);memcpy(&buttons,data,4);CHECK(!(buttons&0x4000));
         if(scalar(data,28)>peak)peak=scalar(data,28);}
-    CHECK(peak>1.5f);CHECK(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_LEFT_SHOULDER,false));
+    CHECK(peak>1.5f);CHECK(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_SOUTH,false));
     CHECK(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_LEFT_STICK,true));
     CHECK(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_RIGHT_STICK,true));CHECK(read(1,data)==0);
     CHECK(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_LEFT_STICK,false));

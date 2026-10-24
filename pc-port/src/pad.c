@@ -84,9 +84,10 @@ static const char *const touch_key_names[K_COUNT]={"touch_left","touch_right","t
 static int touch_keys[K_COUNT]={VK_SPACE,VK_BACK,VK_F8,'T','1','2','3','4',VK_F6,VK_F7,VK_F5};
 static int pad_swipe=-1,source_was[SRC_COUNT];
 // Controllers without a gyro (ISS_PAD_STICK_SPRAY, default on): L3 and R3 pressed together start
-// the spray can of the graffiti missions and end it again (those presses are not passed on). The
-// controller is then held on its side like a can, the right stick turns it (pad_read), LB shakes it
-// and RB recentres it; R2 sprays as usual. Controllers with a gyro are the can themselves.
+// the spray can of the graffiti missions and end it again (those presses are not passed on), with
+// the mouse's spray mode (F7). The controller is then held on its side like a can, the right stick
+// turns it as the mouse does (pad_read), A (cross) shakes it and RB recentres it; R2 sprays as
+// usual. Controllers with a gyro are the can themselves.
 static int stick_spray,stick_chord,stick_shake,stick_recentre,stick_rb_was;
 static float stick_aim[2];
 // Swipes without a touchpad (ISS_PAD_STICK_SWIPE, default on): while a button that touches the
@@ -117,8 +118,8 @@ static void apply_map(const uint8_t map[SRC_COUNT],const int pressed[SRC_COUNT],
         if(stick_chord){if(!held[SRC_LS]&&!held[SRC_RS])stick_chord=0;held[SRC_LS]=held[SRC_RS]=0;}
     }else stick_spray=stick_chord=0;
     stick_shake=0;
-    if(stick_spray){stick_shake=held[SRC_LB];if(held[SRC_RB]&&!stick_rb_was)stick_recentre=1;stick_rb_was=held[SRC_RB];
-        held[SRC_LB]=held[SRC_RB]=0;stick_aim[0]=sx;stick_aim[1]=sy;out->rx=out->ry=128;}
+    if(stick_spray){stick_shake=held[SRC_A];if(held[SRC_RB]&&!stick_rb_was)stick_recentre=1;stick_rb_was=held[SRC_RB];
+        held[SRC_A]=held[SRC_RB]=0;stick_aim[0]=sx;stick_aim[1]=sy;out->rx=out->ry=128;}
     int touch_held=0;
     for(int i=0;i<SRC_COUNT;++i)if(held[i]&&map[i]>=T_TOUCH&&map[i]<=T_TOUCH_RIGHT)touch_held=1;
     if(swipe_option&&touch_held&&!stick_spray){const float ax=fabsf(sx),ay=fabsf(sy),m=ax>ay?ax:ay;
@@ -258,7 +259,8 @@ static void refresh_cursor(HWND window){
 static void show_mode(HWND window){
     if(!window||(!base_title[0]&&!InternalGetWindowText(window,base_title,256)))return;
     wchar_t title[320];
-    swprintf(title,320,L"%ls%ls",base_title,mouse_mode==1?L"  [touchpad: mouse]":mouse_mode==2?L"  [spray: mouse]":
+    swprintf(title,320,L"%ls%ls",base_title,mouse_mode==1?L"  [touchpad: mouse]":
+             mouse_mode==2?(stick_spray?L"  [spray: mouse and right stick]":L"  [spray: mouse]"):
              stick_spray?L"  [spray: right stick]":L"");
     SendMessageTimeoutW(window,WM_SETTEXT,0,(LPARAM)title,SMTO_ABORTIFHUNG,50,NULL);
 }
@@ -384,6 +386,22 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
     if(cmd_spray_toggle){cmd_spray_toggle=0;set_mouse_mode(mouse_mode==2?0:2,game_window);spray_wait_release=0;}
     if(cmd_spray_center){cmd_spray_center=0;memcpy(spray,spray_pose,sizeof(spray));}
     const double cmd_now=(double)out->timestamp/1e6;
+    // The spray can on the right stick (stick_spray, apply_map) starts and ends the mouse's spray
+    // mode too, so both turn the same can. The push is a turn rate, squared past a 12% dead zone for
+    // fine aim, as fast as 400 pixels of mouse per second at full push (ISS_STICK_SPRAY_SPEED scales
+    // it). A short rumble tells it started (longer) or ended.
+    static int stick_shown;static uint64_t stick_tick;static float stick_speed=-1;
+    if(stick_speed<0){const char *s=getenv("ISS_STICK_SPRAY_SPEED");stick_speed=s?(float)atof(s):1;if(!(stick_speed>0))stick_speed=1;}
+    if(!sdl&&!xinput)stick_spray=stick_chord=0; // unplugged: the stick it was aiming with is gone
+    if(stick_spray!=stick_shown){stick_shown=stick_spray;fprintf(stderr,"PAD_STICK spray %s\n",stick_spray?"on":"off");
+        if(stick_spray!=(mouse_mode==2))set_mouse_mode(stick_spray?2:0,game_window);else show_mode(game_window);
+        if(sdl_pad)SDL_RumbleGamepad(sdl_pad,0x6000,0x6000,stick_spray?250:100);}
+    float stick_turn[2]={0,0},stick_dt=0;
+    if(stick_spray){
+        if(stick_recentre){stick_recentre=0;memcpy(spray,spray_pose,sizeof(spray));stick_tick=0;}
+        stick_dt=stick_tick?(float)(out->timestamp-stick_tick)/1e6f:0;stick_tick=out->timestamp;if(stick_dt>0.1f)stick_dt=0.1f;
+        for(int i=0;i<2;++i){const float a=fabsf(stick_aim[i]),v=a>.12f?(a-.12f)/.88f:0;stick_turn[i]=(stick_aim[i]<0?-v*v:v*v)*400*stick_speed*stick_dt;}
+    }
     if(mouse_mode==2&&cmd_now<cmd_aim_until){mouse_dx+=cmd_aim_dx;mouse_dy+=cmd_aim_dy;}
     if(mouse_mode==2){
         const float dt=spray_tick?(float)(out->timestamp-spray_tick)/1e6f:0;spray_tick=out->timestamp;
@@ -391,24 +409,12 @@ static int32_t GUEST_ABI pad_read(int handle,PadData *out){
         const float scale=panel.sensitivity*(focused&&key(VK_SHIFT)?.35f:1.f);
         if(!focused&&cmd_now>=cmd_aim_until)mouse_dx=mouse_dy=0;
         if(spray_wait_release){if(!mouse_left&&!mouse_right)spray_wait_release=0;mouse_left=mouse_right=0;}
-        pad_spray_step(spray,mouse_dx*scale,mouse_dy*scale,dt>0.1f?0.1f:dt,(focused&&mouse_right)||cmd_now<cmd_shake_until,(double)out->timestamp/1e6,out->angular,out->acceleration);
+        pad_spray_step(spray,mouse_dx*scale+stick_turn[0],mouse_dy*scale+stick_turn[1],dt>0.1f?0.1f:dt,
+                       (focused&&mouse_right)||cmd_now<cmd_shake_until||stick_shake,(double)out->timestamp/1e6,out->angular,out->acceleration);
         memcpy(out->orientation,spray,sizeof(spray));
         if(focused&&mouse_left){out->r2=255;}
-    }
-    // The spray can on the right stick (stick_spray, apply_map): the push is a turn rate, squared
-    // past a 12% dead zone for fine aim, as fast as 400 pixels of mouse per second at full push
-    // (ISS_STICK_SPRAY_SPEED scales it). A short rumble tells it started (longer) or ended.
-    static int stick_shown;static uint64_t stick_tick;static float stick_speed=-1;
-    if(stick_speed<0){const char *s=getenv("ISS_STICK_SPRAY_SPEED");stick_speed=s?(float)atof(s):1;if(!(stick_speed>0))stick_speed=1;}
-    if(!sdl&&!xinput)stick_spray=stick_chord=0; // unplugged: the stick it was aiming with is gone
-    if(stick_spray!=stick_shown){stick_shown=stick_spray;fprintf(stderr,"PAD_STICK spray %s\n",stick_spray?"on":"off");
-        show_mode(game_window);if(sdl_pad)SDL_RumbleGamepad(sdl_pad,0x6000,0x6000,stick_spray?250:100);}
-    if(stick_spray&&mouse_mode!=2){
-        if(stick_recentre){stick_recentre=0;memcpy(spray,spray_pose,sizeof(spray));stick_tick=0;}
-        float dt=stick_tick?(float)(out->timestamp-stick_tick)/1e6f:0;stick_tick=out->timestamp;if(dt>0.1f)dt=0.1f;
-        float turn[2];
-        for(int i=0;i<2;++i){const float a=fabsf(stick_aim[i]),v=a>.12f?(a-.12f)/.88f:0;turn[i]=(stick_aim[i]<0?-v*v:v*v)*400*stick_speed*dt;}
-        pad_spray_step(spray,turn[0],turn[1],dt,stick_shake,(double)out->timestamp/1e6,out->angular,out->acceleration);
+    }else if(stick_spray){ // F7 ended the mouse's part: the stick turns the can alone
+        pad_spray_step(spray,stick_turn[0],stick_turn[1],stick_dt,stick_shake,(double)out->timestamp/1e6,out->angular,out->acceleration);
         memcpy(out->orientation,spray,sizeof(spray));
     }
 
